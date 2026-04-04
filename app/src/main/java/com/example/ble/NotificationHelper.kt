@@ -1,3 +1,9 @@
+/**
+ * Builds and posts message notifications for incoming mesh chat packets.
+ *
+ * Notifications are grouped per sender using `MessagingStyle` and a deterministic notification ID.
+ * The helper also keeps a small in-memory history so expanding a notification shows recent lines.
+ */
 package com.example.ble
 
 import android.Manifest
@@ -16,6 +22,7 @@ import androidx.core.content.ContextCompat
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 
+/** Utility object for notification channel management and per-conversation updates. */
 object NotificationHelper {
 
     private const val CHANNEL_ID = "mesh_messages"
@@ -36,6 +43,13 @@ object NotificationHelper {
         NotificationManagerCompat.from(context).cancel(notificationIdForSender(key))
     }
 
+    /**
+     * Shows or updates a sender-specific notification with recent messages in MessagingStyle.
+     *
+     * @param senderName display name shown in the notification title.
+     * @param preview latest received message text.
+     * @param contactId sender ID used for deterministic notification ID and deep-link routing.
+     */
     fun showMessageNotification(
         context    : Context,
         senderName : String,
@@ -118,8 +132,10 @@ object NotificationHelper {
         }
     }
 
+    /** Maps sender key to stable notification ID so updates replace existing conversation cards. */
     private fun notificationIdForSender(senderKey: String): Int = senderKey.hashCode()
 
+    /** Creates the high-importance notification channel if missing (safe to call repeatedly). */
     private fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
 

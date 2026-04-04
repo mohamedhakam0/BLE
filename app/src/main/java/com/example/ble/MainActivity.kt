@@ -1,3 +1,10 @@
+/**
+ * Main Compose entry point for Peer Reach.
+ *
+ * Responsibilities in this file include startup permission requests, mesh service startup,
+ * screen navigation (contacts/chat/QR/logs), and contacts list row actions
+ * (rename/delete chat/delete contact).
+ */
 package com.example.ble
 
 import android.Manifest
@@ -40,6 +47,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/** Top-level destinations rendered by MainActivity. */
 enum class MainScreen {
     CONTACTS,
     CHAT,
@@ -47,6 +55,8 @@ enum class MainScreen {
     QR_SCAN,
     LOGS
 }
+
+/** Activity hosting all main Peer Reach composable screens. */
 class MainActivity : ComponentActivity() {
 
     companion object {
@@ -60,6 +70,10 @@ class MainActivity : ComponentActivity() {
     private var localSenderIdHex: String = "00000000"
     private var localPublicKey: ByteArray = byteArrayOf()
 
+    /**
+     * Initializes identity/repositories, requests runtime permissions, starts mesh service,
+     * and renders the Compose navigation shell.
+     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -199,6 +213,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Requests BLE, camera, and notification runtime permissions where required by API level. */
     private fun requestRuntimePermissionsIfNeeded() {
         val needed = mutableListOf<String>()
 
@@ -249,6 +264,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/**
+ * One conversation row in the contacts list with overflow actions.
+ */
 @Composable
 private fun ContactConversationRow(
     contact: ContactLastMessageRow,
@@ -411,6 +429,9 @@ private fun ContactConversationRow(
     }
 }
 
+/**
+ * Home screen with quick QR actions and chat/contact list.
+ */
 @Composable
 private fun ContactsHomeScreen(
     contactRepository: ContactRepository,
@@ -466,9 +487,11 @@ private fun ContactsHomeScreen(
     }
 }
 
+/** Formats message timestamps for contacts list preview rows. */
 private fun formatTime(timestampMs: Long): String {
     val fmt = SimpleDateFormat("HH:mm", Locale.getDefault())
     return fmt.format(Date(timestampMs))
 }
 
+/** Encodes raw bytes as lowercase hex without separators. */
 private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }

@@ -1,3 +1,10 @@
+/**
+ * Manages local node cryptographic identity and user profile nickname.
+ *
+ * Identity keys are generated with Bouncy Castle X25519 and persisted in
+ * `EncryptedSharedPreferences`. A 4-byte sender ID is derived from SHA-256(publicKey)
+ * and used as the routing identity in mesh packets.
+ */
 package com.example.ble
 
 import android.content.Context
@@ -13,12 +20,14 @@ import org.bouncycastle.crypto.params.X25519PublicKeyParameters
 import java.security.MessageDigest
 import java.security.SecureRandom
 
+/** Immutable snapshot of node key material and derived senderId. */
 data class NodeIdentityData(
     val publicKey: ByteArray,
     val privateKey: ByteArray,
     val senderId: ByteArray
 )
 
+/** Provides get-or-create identity lifecycle and nickname persistence. */
 class NodeIdentity(private val context: Context) {
 
     companion object {
@@ -49,6 +58,9 @@ class NodeIdentity(private val context: Context) {
         context.getSharedPreferences(NICKNAME_PREFS_NAME, Context.MODE_PRIVATE)
     }
 
+    /**
+     * Returns persisted identity if present; otherwise generates and stores a new one.
+     */
     fun getOrCreateIdentity(): NodeIdentityData {
         getIdentityOrNull()?.let { return it }
 
@@ -66,6 +78,7 @@ class NodeIdentity(private val context: Context) {
         return NodeIdentityData(publicKey, privateKey, senderId)
     }
 
+    /** Returns persisted identity, or null when the app has not generated one yet. */
     fun getIdentityOrNull(): NodeIdentityData? {
         val pub = securePrefs.getString(KEY_PUBLIC, null) ?: return null
         val priv = securePrefs.getString(KEY_PRIVATE, null) ?: return null
@@ -78,12 +91,15 @@ class NodeIdentity(private val context: Context) {
         )
     }
 
+    /** Saves user-facing nickname used in QR sharing and contact UI. */
     fun setNickname(nickname: String) {
         profilePrefs.edit().putString(KEY_NICKNAME, nickname).apply()
     }
 
+    /** Returns the stored nickname, or null if not set. */
     fun getNickname(): String? = profilePrefs.getString(KEY_NICKNAME, null)
 
+    /** Derives 4-byte senderId from SHA-256(publicKey). */
     private fun deriveSenderId(publicKey: ByteArray): ByteArray {
         val hash = MessageDigest.getInstance("SHA-256").digest(publicKey)
         return hash.copyOfRange(0, 4)
@@ -115,5 +131,8 @@ class NodeIdentity(private val context: Context) {
     )
 }
 
+/** Encodes raw bytes to compact Base64 string for preference storage. */
 private fun ByteArray.toB64(): String = Base64.encodeToString(this, Base64.NO_WRAP)
+
+/** Decodes Base64 preference string to raw bytes. */
 private fun String.fromB64(): ByteArray = Base64.decode(this, Base64.NO_WRAP)

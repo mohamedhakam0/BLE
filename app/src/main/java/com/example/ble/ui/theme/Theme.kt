@@ -1,3 +1,8 @@
+/**
+ * Compose Material3 theme setup for Peer Reach.
+ *
+ * Provides light/dark color schemes with optional dynamic colors on Android 12+.
+ */
 package com.example.ble.ui.theme
 
 import android.app.Activity
@@ -33,6 +38,7 @@ private val LightColorScheme = lightColorScheme(
     */
 )
 
+/** Applies app-wide Material theme and typography to [content]. */
 @Composable
 fun BLETheme(
     darkTheme: Boolean = isSystemInDarkTheme(),

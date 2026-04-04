@@ -1,12 +1,14 @@
+/**
+ * Example helper snippets showing how to use advertiser/scanner APIs with mesh packets.
+ *
+ * These functions are reference code for manual testing and integration guidance.
+ */
 package com.example.ble
 
 import android.bluetooth.BluetoothAdapter
 import kotlin.random.Random
 
-/**
- * INTEGRATION GUIDE FOR BLE BROADCAST TRANSPORT (FD12 service data)
- */
-
+/** Broadcasts a HELLO packet to all peers using BLE advertising. */
 fun exampleBasicBroadcast(bluetoothAdapter: BluetoothAdapter?) {
     val advertiser = BleAdvertiser(bluetoothAdapter)
 
@@ -27,6 +29,7 @@ fun exampleBasicBroadcast(bluetoothAdapter: BluetoothAdapter?) {
     advertiser.broadcast(PacketSerializer.serialize(packet))
 }
 
+/** Starts scanning and prints decoded messages to stdout for diagnostics. */
 fun exampleScanForMessages(context: android.content.Context, bluetoothAdapter: BluetoothAdapter?) {
     val scanner = BleScanner(context, bluetoothAdapter) { packet ->
         val payloadText = packet.payload.decodeToString()
@@ -38,6 +41,7 @@ fun exampleScanForMessages(context: android.content.Context, bluetoothAdapter: B
     scanner.startScanning()
 }
 
+/** Broadcasts a targeted CHAT packet addressed to one receiver ID. */
 fun exampleTargetedBroadcast(bluetoothAdapter: BluetoothAdapter?) {
     val advertiser = BleAdvertiser(bluetoothAdapter)
     val payload = "Message for you specifically".encodeToByteArray()
@@ -58,6 +62,7 @@ fun exampleTargetedBroadcast(bluetoothAdapter: BluetoothAdapter?) {
     advertiser.broadcast(PacketSerializer.serialize(packet))
 }
 
+/** Demonstrates sending repeated status updates by rebroadcasting new packet payloads. */
 fun exampleUpdateBroadcast(bluetoothAdapter: BluetoothAdapter?) {
     val advertiser = BleAdvertiser(bluetoothAdapter)
 

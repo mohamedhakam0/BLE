@@ -1,3 +1,9 @@
+/**
+ * Receives BOOT_COMPLETED and starts the mesh foreground service automatically.
+ *
+ * This receiver ensures passive relay/receive behavior remains active after device reboot,
+ * even before the user manually opens the app.
+ */
 package com.example.ble
 
 import android.content.BroadcastReceiver
@@ -5,7 +11,9 @@ import android.content.Context
 import android.content.Intent
 import com.example.ble.AppLogger
 
+/** Broadcast receiver that restores ForegroundMeshService after system boot. */
 class BootReceiver : BroadcastReceiver() {
+    /** Handles boot broadcasts and starts `ForegroundMeshService` using foreground mode on API 26+. */
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action != Intent.ACTION_BOOT_COMPLETED) return
 

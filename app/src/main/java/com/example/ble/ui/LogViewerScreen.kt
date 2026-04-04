@@ -1,3 +1,9 @@
+/**
+ * Compose UI screen for inspecting, filtering, clearing, and sharing in-app logs.
+ *
+ * The screen reads entries from `AppLogger`, supports text filtering, and exports logs as
+ * a cache file shared through a FileProvider URI.
+ */
 package com.example.ble.ui
 
 import android.content.Intent
@@ -22,6 +28,11 @@ import androidx.core.content.FileProvider
 import com.example.ble.AppLogger
 import java.io.File
 
+/**
+ * Renders a searchable log list with actions to clear and share log output.
+ *
+ * @param onBack callback used to navigate back to the previous screen.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LogViewerScreen(
@@ -138,6 +149,7 @@ fun LogViewerScreen(
     }
 }
 
+/** Extracts the first timestamp token from dump text, with a safe fallback. */
 private fun extractFirstTimestampOrNow(text: String): String {
     // Expected line format: "HH:mm:ss.SSS ..."
     val firstLine = text.lineSequence().firstOrNull { it.isNotBlank() } ?: return "00:00:00.000"
@@ -145,6 +157,7 @@ private fun extractFirstTimestampOrNow(text: String): String {
     return if (ts.matches(Regex("\\d{2}:\\d{2}:\\d{2}\\.\\d{3}"))) ts else "00:00:00.000"
 }
 
+/** Best-effort sender-id extraction used to build shared log file names. */
 private fun extractSenderIdOrFallback(text: String): String {
     // We don’t have a guaranteed identity line in logs, so use best-effort:
     // Look for "senderId=" or "myId=" hex-ish tokens; fallback to "unknown".

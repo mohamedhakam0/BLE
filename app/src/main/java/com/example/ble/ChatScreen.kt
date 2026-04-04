@@ -1,3 +1,9 @@
+/**
+ * Chat room UI for one contact conversation.
+ *
+ * This file renders the message list, input composer, delivery checkmarks, back handling,
+ * and hidden triple-tap delete-history gesture. BLE transport logic stays in ChatViewModel.
+ */
 package com.example.ble
 
 import androidx.activity.compose.BackHandler
@@ -60,6 +66,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * Renders a WhatsApp-style chat screen for one contact.
+ *
+ * @param contactName label shown in the top app bar.
+ * @param receiverIdHex contact sender-id in hex form.
+ * @param viewModel source of messages and send/delete actions.
+ * @param onBack callback used to return to contacts screen.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
@@ -219,6 +233,11 @@ fun ChatScreen(
     }
 }
 
+/**
+ * Renders one chat bubble with timestamp and optional delivery checkmarks.
+ *
+ * New items animate in with a subtle fade + upward slide.
+ */
 @Composable
 private fun MessageBubble(
     message: ChatUiMessage,

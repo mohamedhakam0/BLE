@@ -1,3 +1,161 @@
+/**
+ * Chat business logic and lifecycle management for a single contact conversation.
+ *
+ * This file bridges the UI layer (ChatScreen) with the BLE/database layers.
+ * It handles sending messages, receiving messages, ACK processing, and persistence.
+ * One instance per open chat screen (keyed by contactId in MainActivity).
+ *
+ * Main Class:
+ * - ChatViewModel: Android ViewModel for lifecycle-aware state management
+ *
+ * Key Functions:
+ * - sendMessage(text): User sends a message
+ *   1. Creates MeshPacket(type=CHAT, senderId=me, receiverId=contact)
+ *   2. Serializes to ByteArray via PacketSerializer
+ *   3. Calls BleAdvertiser.broadcast() to start transmission
+ *   4. Stores MessageEntity in Room with status=SENT
+ *   5. Message appears in UI immediately with single checkmark
+ *
+ * - handlePacket(bytes): Receives packet from ForegroundMeshService broadcast
+ *   1. Deserializes ByteArray to MeshPacket
+ *   2. Verifies receiverId is me (filter out broadcast/misdirected packets)
+ *   3. If type=ACK: Update matching sent message status to DELIVERED (double checkmark)
+ *   4. If type=CHAT: Store incoming message in Room, add to UI
+ *   5. Send ACK back (now done in ForegroundMeshService, not here)
+ *
+ * - deleteHistory(contactId): Delete all messages with this contact
+ *   1. Query Room for all MessageEntity rows with this contactId
+ *   2. Extract msgId values from those messages
+ *   3. Delete all rows from database
+ *   4. Add msgIds to ForegroundMeshService.addSeenMsgIds() dedup cache
+ *   5. Clear message list in UI
+ *   Result: If other device re-broadcasts same messages, they're silently dropped
+ *
+ * Data Flow (Message Send):
+ * User types "Hello" → ChatScreen.input state updated
+ *   ↓
+ * User taps Send → sendMessage("Hello") called
+ *   ↓
+ * Create MeshPacket(type=CHAT, payload="Hello", ...)
+ *   ↓
+ * Serialize to 41-byte header + payload
+ *   ↓
+ * BleAdvertiser.broadcast(bytes) → starts 5 retries over ~25 seconds
+ *   ↓
+ * MessageEntity stored in Room: status=SENT, timestamp=now
+ *   ↓
+ * ChatScreen re-renders, message appears with single checkmark
+ *   ↓
+ * [If recipient's device receives within retry window]
+ *   ↓
+ * ForegroundMeshService sends ACK back
+ *   ↓
+ * BleAdvertiser broadcasts ACK packet
+ *   ↓
+ * This device's BleScanner receives ACK
+ *   ↓
+ * ForegroundMeshService.onPacketReceived handles ACK
+ *   ↓
+ * Broadcasts ACTION_PACKET_RECEIVED intent with ACK bytes
+ *   ↓
+ * ChatViewModel.mPacketReceiver handles ACK
+ *   ↓
+ * Finds MessageEntity with matching msgId
+ *   ↓
+ * Updates status to DELIVERED, saves to Room
+ *   ↓
+ * messages Flow emits updated list
+ *   ↓
+ * ChatScreen re-renders, single checkmark becomes double checkmark ✓
+ *
+ * Data Flow (Message Receive):
+ * [Another device sends CHAT packet]
+ *   ↓
+ * BleScanner receives advertising packet
+ *   ↓
+ * Deserializes to MeshPacket(type=CHAT, payload="Hi", senderId=friend, receiverId=me)
+ *   ↓
+ * ForegroundMeshService.onPacketReceived callback fires
+ *   ↓
+ * Dedup check passes (new msgId)
+ *   ↓
+ * ForegroundMeshService sends ACK back
+ *   ↓
+ * Broadcasts ACTION_PACKET_RECEIVED with CHAT packet bytes
+ *   ↓
+ * ChatViewModel.mPacketReceiver.onReceive() fires
+ *   ↓
+ * handlePacket(bytes) deserializes CHAT packet
+ *   ↓
+ * Stores MessageEntity in Room: direction=INCOMING, status=DELIVERED
+ *   ↓
+ * messages Flow emits updated list
+ *   ↓
+ * ChatScreen re-renders, new message bubble appears with animation
+ *
+ * BroadcastReceiver (mPacketReceiver):
+ * - Registers in onCleared() → onCreate()
+ * - Listens for ForegroundMeshService.ACTION_PACKET_RECEIVED
+ * - Calls handlePacket() with packet bytes
+ * - Unregisters in onCleared() to avoid memory leaks
+ * - Context.RECEIVER_NOT_EXPORTED for Android 14+ safety
+ *
+ * Room Integration:
+ * - messageRepository.observeMessagesForContact(contactId)
+ *   Returns Flow<List<MessageEntity>> ordered by timestamp
+ *   Auto-updates UI when messages added/updated in database
+ *
+ * - messageRepository.upsert(message)
+ *   Insert or update MessageEntity
+ *   Returns msgId for later ACK matching
+ *
+ * - messageRepository.updateStatus(msgId, status)
+ *   Update only the status field (SENT → DELIVERED)
+ *   Minimal database write
+ *
+ * State Mapping:
+ * - MessageEntity (in database):
+ *   msgId (Long), contactId (String), text (String),
+ *   direction (INCOMING/OUTGOING), status (SENT/DELIVERED), timestamp (Long)
+ *
+ * - ChatUiMessage (in UI):
+ *   msgIdHex (String), text (String), isMine (Boolean),
+ *   timestampMs (Long), status (DeliveryStatus)
+ *   Transformation in messages Flow.map()
+ *
+ * Thread Model:
+ * - Main thread: ChatScreen Compose rendering
+ * - IO thread: Room database operations (via messageRepository coroutines)
+ * - Binder thread: BroadcastReceiver.onReceive() (posted to main via Intent)
+ * - viewModelScope: Lifecycle-aware coroutine scope (cancelled in onCleared)
+ *
+ * Lifecycle:
+ * - onCreate(): Register BroadcastReceiver
+ * - onCleared(): Unregister BroadcastReceiver, cancel all coroutines
+ * - Activity destroyed: ViewModel destroyed
+ * - New chat opened with same contact: New ViewModel instance (key by contactId)
+ *
+ * Error Handling:
+ * - Null packet after deserialize: Silently skip (invalid bytes)
+ * - Wrong receiverId: Silently skip (not for me)
+ * - Database write fails: Logged via AppLogger
+ * - Broadcast delivery fails: Silently fails (no retry at ViewModel level)
+ *
+ * Performance:
+ * - Lazy evaluation: messages Flow only emits on database change
+ * - Coroutine scope: Expensive DB operations don't block UI thread
+ * - Room transactions: Atomic updates prevent race conditions
+ * - No in-memory cache: Room is source of truth
+ *
+ * Interactions:
+ * - ChatScreen.kt: UI layer, calls sendMessage()
+ * - ForegroundMeshService.kt: Broadcasts incoming packets via Intent
+ * - BleAdvertiser.kt: Broadcasts serialized message (via broadcast() call)
+ * - PacketSerializer.kt: Serialize/deserialize MeshPacket
+ * - MessageRepository.kt: Room DAO wrapper, database persistence
+ * - MessageEntity: Database model for messages
+ * - NodeIdentity.kt: Get my own senderId for packet creation
+ */
 package com.example.ble
 
 import android.app.Application

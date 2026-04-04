@@ -1,3 +1,9 @@
+/**
+ * Centralized application logger used by both runtime logic and the in-app log viewer.
+ *
+ * This object keeps a bounded in-memory buffer and mirrors each entry to Logcat.
+ * It does not hold any Context reference, so it is safe for process lifetime usage.
+ */
 package com.example.ble
 
 import android.util.Log
@@ -30,21 +36,25 @@ object AppLogger {
 
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
+    /** Writes a debug line to the in-memory buffer and Logcat. */
     fun d(tag: String, message: String) {
         add(Level.DEBUG, tag, message)
         Log.d(tag, message)
     }
 
+    /** Writes an info line to the in-memory buffer and Logcat. */
     fun i(tag: String, message: String) {
         add(Level.INFO, tag, message)
         Log.i(tag, message)
     }
 
+    /** Writes a warning line and optional stack trace to the buffer and Logcat. */
     fun w(tag: String, message: String, throwable: Throwable? = null) {
         add(Level.WARN, tag, message + (throwable?.let { "\n${Log.getStackTraceString(it)}" } ?: ""))
         if (throwable != null) Log.w(tag, message, throwable) else Log.w(tag, message)
     }
 
+    /** Writes an error line and optional stack trace to the buffer and Logcat. */
     fun e(tag: String, message: String, throwable: Throwable? = null) {
         add(Level.ERROR, tag, message + (throwable?.let { "\n${Log.getStackTraceString(it)}" } ?: ""))
         if (throwable != null) Log.e(tag, message, throwable) else Log.e(tag, message)
@@ -56,18 +66,25 @@ object AppLogger {
     /** Compatibility with the user-request naming. */
     fun logError(tag: String, message: String, throwable: Throwable? = null) = e(tag, message, throwable)
 
+    /** Clears all buffered log entries shown by the in-app log viewer. */
     fun clear() {
         synchronized(lock) {
             buffer.clear()
         }
     }
 
+    /** Returns a snapshot copy of current entries in insertion order. */
     fun snapshot(): List<Entry> {
         synchronized(lock) {
             return buffer.toList()
         }
     }
 
+    /**
+     * Builds plain-text output for sharing.
+     *
+     * @param query optional filter matched against tag or message.
+     */
     fun dumpText(query: String? = null): String {
         val q = query?.trim().orEmpty()
         val entries = snapshot()
@@ -108,4 +125,3 @@ object AppLogger {
         }
     }
 }
-

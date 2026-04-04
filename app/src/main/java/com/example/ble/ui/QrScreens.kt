@@ -1,3 +1,9 @@
+/**
+ * Compose screens for QR identity generation and contact scanning.
+ *
+ * This file contains both the display side (`QrGenerateScreen`) and capture side (`QrScanScreen`)
+ * of the onboarding flow, including CameraX + ML Kit decoding and Room contact persistence.
+ */
 package com.example.ble.ui
 
 import android.Manifest
@@ -46,6 +52,9 @@ import androidx.camera.core.ExperimentalGetImage
 
 private const val QR_TAG = "QRScan"
 
+/**
+ * Renders the local user's QR identity and allows editing display name before sharing.
+ */
 @Composable
 fun QrGenerateScreen(
     nickname: String,
@@ -117,6 +126,7 @@ fun QrGenerateScreen(
     }
 }
 
+/** Generates a QR bitmap from payload text for display in Compose UI. */
 private fun generateQrBitmap(data: String, size: Int = 512): android.graphics.Bitmap? = try {
     val bitMatrix = QRCodeWriter().encode(data, BarcodeFormat.QR_CODE, size, size)
     val pixels = IntArray(size * size) { idx -> if (bitMatrix.get(idx % size, idx / size)) 0xFF000000.toInt() else 0xFFFFFFFF.toInt() }
@@ -125,6 +135,11 @@ private fun generateQrBitmap(data: String, size: Int = 512): android.graphics.Bi
     null
 }
 
+/**
+ * Renders camera-based QR scanner and contact-save dialog.
+ *
+ * Parsed payloads are converted to `Contact` rows and saved through [ContactRepository].
+ */
 @Composable
 fun QrScanScreen(
     contactRepository: ContactRepository,
@@ -250,6 +265,9 @@ fun QrScanScreen(
     }
 }
 
+/**
+ * CameraX preview surface with ML Kit analyzer that emits decoded QR content.
+ */
 @Composable
 private fun CameraPreview(
     modifier: Modifier = Modifier,
@@ -326,6 +344,7 @@ private fun CameraPreview(
     }
 }
 
+/** Switches coroutine execution back to Main dispatcher for UI-safe callbacks. */
 private suspend fun withContextMain(block: () -> Unit) {
     kotlinx.coroutines.withContext(Dispatchers.Main) { block() }
 }

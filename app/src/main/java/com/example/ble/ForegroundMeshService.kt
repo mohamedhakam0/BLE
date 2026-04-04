@@ -1,3 +1,9 @@
+/**
+ * Foreground mesh runtime service.
+ *
+ * This service keeps BLE scanning/advertising active in background, handles packet deduplication,
+ * sends ACKs for inbound chat packets, and bridges packets to UI via local broadcasts.
+ */
 package com.example.ble
 
 import android.app.ActivityManager

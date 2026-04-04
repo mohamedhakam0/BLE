@@ -1,3 +1,65 @@
+/**
+ * Broadcasts mesh packets via BLE 5.0 Extended Advertising with Coded PHY.
+ *
+ * This file is responsible for taking serialized mesh packets and transmitting them
+ * over the Bluetooth radio using extended advertising for maximum range (Coded PHY).
+ * No GATT connections are established - this is connectionless broadcasting.
+ *
+ * Main Classes:
+ * - BleAdvertiser: Wrapper class handling API version compatibility (API 24+)
+ * - BleAdvertiserApi26: Implementation for API 26+ (extended advertising support)
+ *
+ * Key Functions:
+ * - broadcast(packetBytes): Broadcasts a serialized MeshPacket via BLE advertising
+ *   - Handles retry queue: retries up to MAX_RETRIES times with random jitter
+ *   - Auto-stops after ADVERT_DURATION_MS to allow other packets through
+ *   - Serializes stop→start to ensure only one active advertising set at a time
+ *   - Posts to worker thread to avoid blocking main thread
+ *
+ * - cancelRetries(msgId): Stops retrying a specific packet when ACK is received
+ *   - Checks if currently advertising packet matches the msgId
+ *   - Cuts the current window short and moves to next in queue
+ *   - Saves battery by not continuing to broadcast already-delivered packets
+ *
+ * - stopAll(): Stops all advertising and clears the queue
+ *   - Called from ForegroundMeshService.onDestroy()
+ *
+ * PHY Configuration:
+ * - Primary PHY: LE_CODED (long-range, ~4x the distance of 1M)
+ * - Secondary PHY: LE_CODED (extended advertising requires secondary PHY)
+ * - Advertising Interval: INTERVAL_LOW (~500ms)
+ * - Transmit Power: TX_POWER_HIGH (maximum output)
+ * - Extended Mode: setLegacyMode(false) - mandatory for Coded PHY
+ *
+ * Retry Strategy:
+ * - CHAT packets: Up to 5 retries, ~5 seconds per attempt (total ~25 seconds max)
+ * - ACK packets: Up to 3 retries (fire-and-forget confirmations)
+ * - Jitter: Random 500-2000ms between retries to avoid collision with other devices
+ *
+ * Interactions:
+ * - MeshPacket.kt: Input is serialized MeshPacket as ByteArray
+ * - PacketSerializer.kt: Packets already serialized before reaching this class
+ * - ForegroundMeshService.kt: Calls broadcast() for outgoing CHAT/HELLO/ACK packets
+ * - ForegroundMeshService.kt: Calls cancelRetries() when ACK is received
+ * - ChatViewModel.kt: Creates and sends user messages through ForegroundMeshService
+ * - BleScanner.kt: Receiver side (this is the sender side)
+ *
+ * Thread Safety:
+ * - All work done on dedicated HandlerThread (workerThread)
+ * - Queue (ArrayDeque) is thread-safe via Handler serialization
+ * - isBusy flag uses AtomicBoolean for thread-safe state
+ *
+ * Android Permissions Required:
+ * - android.permission.BLUETOOTH_ADVERTISE (Android 12+)
+ * - android.permission.BLUETOOTH_CONNECT (Android 12+, for adapter access)
+ *
+ * Edge Cases Handled:
+ * - API < 26: Graceful fallback to null (extended advertising not available)
+ * - Adapter null: Graceful error logging
+ * - Missing permissions: SecurityException caught and logged
+ * - Interrupted operation: Retries continue after interruption
+ * - Multiple rapid broadcasts: Queued sequentially, never interleaved
+ */
 package com.example.ble
 
 import android.annotation.SuppressLint

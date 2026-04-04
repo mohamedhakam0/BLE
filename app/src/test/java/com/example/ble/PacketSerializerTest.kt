@@ -1,3 +1,6 @@
+/**
+ * Unit tests validating MeshPacket serialization/deserialization behavior.
+ */
 package com.example.ble
 
 import org.junit.Assert.assertArrayEquals
@@ -7,10 +10,12 @@ import org.junit.Test
 import kotlin.random.Random
 import kotlin.text.toByte
 
+/** Coverage tests for round-trip, bounds checks, and invalid-input handling. */
 class PacketSerializerTest {
 
     private fun randomBytes(size: Int) = ByteArray(size).also { Random.nextBytes(it) }
 
+    /** Verifies full field-by-field round-trip integrity. */
     @Test
     fun serializeDeserializeRoundTrip() {
         val payload = randomBytes(20)
@@ -46,6 +51,7 @@ class PacketSerializerTest {
         assertArrayEquals(packet.payload, decoded.payload)
     }
 
+    /** Verifies payload size guard rejects packets above protocol limit. */
     @Test
     fun failsWhenPayloadTooLarge() {
         val payload = randomBytes(210)
@@ -71,14 +77,16 @@ class PacketSerializerTest {
 
         assert(threw)
     }
+
+    /** Prints a deterministic HELLO packet in hex for manual debugging. */
     @Test
     fun printHelloPacketHex() {
         val payload = "HELLO".toByteArray(Charsets.UTF_8)
         val packet = MeshPacket(
             type = PacketType.HELLO,
-            msgId = byteArrayOf(1,2,3,4,5,6,7,8),
-            senderId = byteArrayOf(0x11,0x22,0x33,0x44),
-            receiverId = byteArrayOf(0xFF.toByte(),0xFF.toByte(),0xFF.toByte(),0xFF.toByte()),
+            msgId = byteArrayOf(1, 2, 3, 4, 5, 6, 7, 8),
+            senderId = byteArrayOf(0x11, 0x22, 0x33, 0x44),
+            receiverId = byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte()),
             ttl = 5.toByte(),
             hopCount = 0.toByte(),
             timestamp = (System.currentTimeMillis() / 1000L).toInt(),
@@ -91,6 +99,8 @@ class PacketSerializerTest {
         val hex = bytes.joinToString(" ") { "%02X".format(it) }
         println("HELLO packet (${bytes.size} bytes): $hex")
     }
+
+    /** Verifies invalid/truncated byte arrays deserialize to null. */
     @Test
     fun deserializeInvalidReturnsNull() {
         val invalidBytes = ByteArray(10)
@@ -98,4 +108,3 @@ class PacketSerializerTest {
         assertEquals(null, result)
     }
 }
-

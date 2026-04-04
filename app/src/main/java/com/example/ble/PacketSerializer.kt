@@ -1,3 +1,9 @@
+/**
+ * Serialization layer for mesh packet transport bytes.
+ *
+ * This file is the single source of truth for packet wire format (big-endian) used by
+ * BLE advertiser/scanner paths and tests.
+ */
 package com.example.ble
 
 import java.nio.ByteBuffer
@@ -31,6 +37,9 @@ object PacketSerializer {
 
     // ── Serialise ──────────────────────────────────────────────────────────────
 
+    /**
+     * Serializes a [MeshPacket] into transport bytes following the fixed header layout.
+     */
     fun serialize(packet: MeshPacket): ByteArray {
         val totalSize = FIXED_HEADER_SIZE + packet.payload.size
         require(totalSize <= MAX_PACKET_SIZE) {
@@ -54,6 +63,11 @@ object PacketSerializer {
 
     // ── Deserialise ────────────────────────────────────────────────────────────
 
+    /**
+     * Attempts to deserialize transport bytes into [MeshPacket].
+     *
+     * @return parsed packet, or null when size/format/type is invalid.
+     */
     fun deserialize(bytes: ByteArray): MeshPacket? {
         if (bytes.size !in FIXED_HEADER_SIZE until MAX_PACKET_SIZE) {
             diagLog("PacketSerializer.deserialize(): invalid size len=${bytes.size} -> null")

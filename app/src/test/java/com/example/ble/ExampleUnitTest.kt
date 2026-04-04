@@ -1,14 +1,13 @@
+/**
+ * Basic host-side unit tests for project sanity checks.
+ */
 package com.example.ble
 
 import org.junit.Test
 
 import org.junit.Assert.*
 
-/**
- * Example local unit test, which will execute on the development machine (host).
- *
- * See [testing documentation](http://d.android.com/tools/testing).
- */
+/** Simple sample unit test running on the JVM. */
 class ExampleUnitTest {
     @Test
     fun addition_isCorrect() {
