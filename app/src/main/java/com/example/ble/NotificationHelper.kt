@@ -9,6 +9,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Build
+import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import java.util.ArrayDeque
@@ -94,19 +96,20 @@ object NotificationHelper {
 
         val latestText = deque.lastOrNull()?.text ?: preview
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle(senderName)
+            .setContentText(latestText)
+            .setSmallIcon(R.drawable.ic_notification_logo)
+            .setStyle(style)
+            .setContentIntent(pendingIntent)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setOnlyAlertOnce(false)
+            .build()
 
         // Large icon (full color) in notification body.
         val largeIcon: Bitmap? = runCatching {
             BitmapFactory.decodeResource(context.resources, R.mipmap.ic_launcher)
         }.getOrNull()
 
-            .setDefaults(NotificationCompat.DEFAULT_ALL)
-            // Use the provided monochrome PNG small-icon resource.
-            .setSmallIcon(R.drawable.ic_notification_logo)
-            .setLargeIcon(largeIcon)
-            .setOnlyAlertOnce(false)
-            .build()
 
         try {
             nm.notify(notificationIdForSender(senderKey), notification)

@@ -203,12 +203,14 @@ class ForegroundMeshService : Service() {
             }
 
             // ── 3. Re-serialise for the local broadcast (ChatViewModel needs bytes) ──
-            val broadcastBytes = PacketSerializer.serialize(packet)
-            val intent = Intent(ACTION_PACKET_RECEIVED).apply {
-                setPackage(packageName) // app-private broadcast
-                putExtra(EXTRA_PACKET_BYTES, broadcastBytes)
-            }
-
+             val broadcastBytes = PacketSerializer.serialize(packet)
+             val intent = Intent(ACTION_PACKET_RECEIVED).apply {
+                 setPackage(packageName) // app-private broadcast
+                 putExtra(EXTRA_PACKET_BYTES, broadcastBytes)
+             }
+             sendBroadcast(intent)
+         }
+        
         // Register screen/user-present receiver to recover from vendor scan resets.
         runCatching {
             val f = IntentFilter().apply {
