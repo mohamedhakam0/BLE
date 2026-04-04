@@ -7,14 +7,32 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.Build
-import androidx.core.app.NotificationCompat
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import java.util.ArrayDeque
+import java.util.concurrent.ConcurrentHashMap
 
 object NotificationHelper {
 
     private const val CHANNEL_ID = "mesh_messages"
+
+    // Keep the last few messages per senderId for MessagingStyle expansion.
+    private const val MAX_PER_SENDER = 6
+    private val messageBuffers: MutableMap<String, ArrayDeque<NotifLine>> = ConcurrentHashMap()
+
+    private data class NotifLine(
+        val text: String,
+        val timestampMs: Long
+    )
+
+    /** Clears the buffered lines for a sender and cancels the notification. */
+    fun clearConversation(context: Context, senderId: String) {
+        val key = senderId.trim().lowercase()
+        messageBuffers.remove(key)
+        NotificationManagerCompat.from(context).cancel(notificationIdForSender(key))
+    }
 
     fun showMessageNotification(
         context    : Context,
@@ -22,6 +40,7 @@ object NotificationHelper {
         preview    : String,
         contactId  : String
     ) {
+        val senderKey = contactId.trim().lowercase()
         val nm = NotificationManagerCompat.from(context)
 
         // Explicitly handle "notifications disabled" and Android 13+ runtime permission.
@@ -43,38 +62,60 @@ object NotificationHelper {
 
         ensureChannel(context)
 
+        // Append message to per-sender buffer.
+        val now = System.currentTimeMillis()
+        val deque = messageBuffers.getOrPut(senderKey) { ArrayDeque() }
+        deque.addLast(NotifLine(text = preview, timestampMs = now))
+        while (deque.size > MAX_PER_SENDER) deque.removeFirst()
+
         val openChatIntent = Intent(context, MainActivity::class.java).apply {
             action = Intent.ACTION_VIEW
-            putExtra("contactId", contactId)
+            putExtra("contactId", senderKey)
         }
 
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-
         val pendingIntent = PendingIntent.getActivity(
             context,
-            contactId.hashCode(),
+            notificationIdForSender(senderKey),
             openChatIntent,
             flags
         )
 
+        // MessagingStyle with a running list of messages for this sender.
+        // Note: This project’s androidx.core version doesn’t expose NotificationCompat.Person
+        // or setConversationTitle(). Use the legacy-compatible MessagingStyle API.
+        val style = NotificationCompat.MessagingStyle(/* userDisplayName = */ "Peer Reach")
+            .setGroupConversation(true)
+
+        // Oldest → newest.
+        for (line in deque) {
+            style.addMessage(line.text, line.timestampMs, /* sender = */ senderName)
+        }
+
+        val latestText = deque.lastOrNull()?.text ?: preview
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setContentTitle(senderName)
-            .setContentText(preview)
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+
+        // Large icon (full color) in notification body.
+        val largeIcon: Bitmap? = runCatching {
+            BitmapFactory.decodeResource(context.resources, R.mipmap.ic_launcher)
+        }.getOrNull()
+
             .setDefaults(NotificationCompat.DEFAULT_ALL)
-            .setAutoCancel(true)
-            .setContentIntent(pendingIntent)
+            // Use the provided monochrome PNG small-icon resource.
+            .setSmallIcon(R.drawable.ic_notification_logo)
+            .setLargeIcon(largeIcon)
+            .setOnlyAlertOnce(false)
             .build()
 
         try {
-            nm.notify(contactId.hashCode(), notification)
+            nm.notify(notificationIdForSender(senderKey), notification)
         } catch (se: SecurityException) {
             AppLogger.e("Notify", "notify() SecurityException: ${se.message}", se)
         }
     }
+
+    private fun notificationIdForSender(senderKey: String): Int = senderKey.hashCode()
 
     private fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return

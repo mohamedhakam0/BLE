@@ -96,9 +96,10 @@ class MainActivity : ComponentActivity() {
                         contactRepository.observeContactsWithLastMessage().collectLatest { rows ->
                             val found = rows.firstOrNull { it.senderId.equals(contactId, ignoreCase = true) }
                             if (found != null) {
+                                // Clear existing notification + buffer for this conversation.
+                                NotificationHelper.clearConversation(applicationContext, found.senderId)
                                 activeContact = found
                                 currentScreen = MainScreen.CHAT
-                                return@collectLatest
                             }
                         }
                     }
@@ -114,6 +115,8 @@ class MainActivity : ComponentActivity() {
                             onOpenChat = {
                                 activeContact = it
                                 currentScreen = MainScreen.CHAT
+                                // Clear existing notification + buffer when entering chat.
+                                NotificationHelper.clearConversation(applicationContext, it.senderId)
                             },
                             onShowQr = { currentScreen = MainScreen.QR_GENERATE },
                             onScanQr = { currentScreen = MainScreen.QR_SCAN },

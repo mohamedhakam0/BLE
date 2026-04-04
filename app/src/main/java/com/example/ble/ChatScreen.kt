@@ -52,6 +52,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -193,7 +194,11 @@ fun ChatScreen(
                         .weight(1f)
                         .onFocusChanged { inputFocused = it.isFocused },
                     placeholder = { Text("Message") },
-                    singleLine = true
+                    singleLine = false,
+                    maxLines = 6,
+                    keyboardOptions = KeyboardOptions.Default.copy(
+                        imeAction = ImeAction.None
+                    )
                 )
                 Spacer(Modifier.width(8.dp))
                 Button(

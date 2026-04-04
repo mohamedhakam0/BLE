@@ -27,12 +27,6 @@ class BleScanner(
         private const val TAG      = "BleScanner"
         private const val DIAG_TAG = "BLE"
 
-        // 25-minute watchdog: restarts the scanner before Android's 30-minute
-        // opportunistic-scan demotion on API 24+. Intentionally 25 minutes —
-        // NOT 25 seconds. The old 25-second period hit Android 7+'s scan
-        // rate limit (5 starts per 30 seconds) and caused constant 200–400 ms
-        // scan gaps every 25 s. 25 minutes gives a comfortable safety margin
-        // while restarting rarely enough to never approach the rate limit.
         private const val WATCHDOG_PERIOD_MS = 25 * 60 * 1000L   // 25 minutes
 
         private const val MIN_PACKET_BYTES = 41

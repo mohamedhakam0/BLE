@@ -208,8 +208,6 @@ class ForegroundMeshService : Service() {
                 setPackage(packageName) // app-private broadcast
                 putExtra(EXTRA_PACKET_BYTES, broadcastBytes)
             }
-            sendBroadcast(intent)
-        }
 
         // Register screen/user-present receiver to recover from vendor scan resets.
         runCatching {
