@@ -8,6 +8,7 @@ package com.example.ble
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -123,12 +124,9 @@ class ContactRepository private constructor(private val db: AppDatabase) {
 
     /** Deletes both chat history and contact in a single Room transaction. */
     suspend fun deleteContactAndChat(senderId: String) {
-        db.runInTransaction {
-            // RunBlocking is safe inside runInTransaction for small local ops.
-            kotlinx.coroutines.runBlocking {
-                messageDao.deleteForContact(senderId)
-                contactDao.delete(senderId)
-            }
+        db.withTransaction {
+            messageDao.deleteForContact(senderId)
+            contactDao.delete(senderId)
         }
     }
 }
