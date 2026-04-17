@@ -99,7 +99,7 @@ import java.util.UUID
 class BleScanner(
     private val context: Context,
     private val bluetoothAdapter: BluetoothAdapter?,
-    private val onPacketReceived: (MeshPacket) -> Unit
+    private val onPacketReceived: (MeshPacket, ByteArray, Int) -> Unit
 ) {
 
     companion object {
@@ -244,7 +244,7 @@ class BleScanner(
                 return
             }
 
-            onPacketReceived(packet)
+            onPacketReceived(packet, serviceData, result.rssi)
         }
     }
 }

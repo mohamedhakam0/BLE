@@ -84,6 +84,7 @@ class ForegroundMeshService : Service() {
 
     private var scanner: BleScanner? = null
     private var advertiser: BleAdvertiser? = null
+    private var helloBeaconManager: HelloBeaconManager? = null
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val contactNicknameCache: MutableMap<String, String> = java.util.concurrent.ConcurrentHashMap()
@@ -136,6 +137,12 @@ class ForegroundMeshService : Service() {
         advertiser = BleAdvertiser(adapter)
 
         val nodeIdentity = NodeIdentity(applicationContext)
+        val myIdHex = nodeIdentity.getOrCreateIdentity().senderId.toHex()
+        NeighborTable.clear()
+        NeighborTable.setSelfNodeId(myIdHex)
+        helloBeaconManager = HelloBeaconManager(nodeIdentity) { advertiser }
+        helloBeaconManager?.start(serviceScope)
+        AppLogger.log("HELLO", "HelloBeaconManager started")
 
         serviceScope.launch {
             runCatching {
@@ -146,8 +153,19 @@ class ForegroundMeshService : Service() {
             }.onFailure { AppLogger.w(DIAG_TAG, "contact cache load failed: ${it.message}") }
         }
 
-        scanner = BleScanner(applicationContext, adapter) { packet ->
+        scanner = BleScanner(applicationContext, adapter) { packet, rawBytes, rssi ->
             lastScanEventAt = System.currentTimeMillis()
+
+            // HELLO packets are strictly for neighbor presence/gossip; never dedupe or relay.
+            if (packet.type == PacketType.HELLO) {
+                val senderHex = packet.senderId.toHex()
+                NeighborTable.upsertDirect(senderHex, rssi, System.currentTimeMillis())
+                parseHelloPayload(packet.payload, senderHex)
+                    .filter { it.nodeId != myIdHex }
+                    .forEach { NeighborTable.upsertExtended(it.nodeId, it.rssi, it.seenVia) }
+                AppLogger.log("HELLO", "Neighbor: $senderHex RSSI=$rssi")
+                return@BleScanner
+            }
 
             // Only process packets meant for me (or broadcast). Anything else is mesh noise.
             val myId = nodeIdentity.getOrCreateIdentity().senderId
@@ -160,8 +178,8 @@ class ForegroundMeshService : Service() {
                 advertiser?.cancelRetries(packet.msgId)
             }
 
-            // ── 1. DEDUP — must be the very first check for CHAT/HELLO addressed to me/broadcast (never ACK) ──
-            if (packet.type != PacketType.ACK) {
+            // ── 1. DEDUP — only for CHAT packets (ACK skips; HELLO already returned above) ──
+            if (packet.type == PacketType.CHAT) {
                 val msgIdLong = runCatching { packet.msgId.toLongBE() }.getOrNull()
                 if (msgIdLong != null) {
                     synchronized(seenPackets) {
@@ -208,11 +226,10 @@ class ForegroundMeshService : Service() {
                 )
             }
 
-            // ── 3. Re-serialise for the local broadcast (ChatViewModel needs bytes) ──
-             val broadcastBytes = PacketSerializer.serialize(packet)
+            // ── 3. Forward original wire bytes to ChatViewModel via local broadcast ──
              val intent = Intent(ACTION_PACKET_RECEIVED).apply {
                  setPackage(packageName) // app-private broadcast
-                 putExtra(EXTRA_PACKET_BYTES, broadcastBytes)
+                 putExtra(EXTRA_PACKET_BYTES, rawBytes)
              }
              sendBroadcast(intent)
          }
@@ -254,6 +271,7 @@ class ForegroundMeshService : Service() {
         runCatching { unregisterReceiver(scanResumeReceiver) }
         scanner?.stopScanning(); scanner = null
         advertiser?.stopAll(); advertiser = null
+        helloBeaconManager?.stop(); helloBeaconManager = null
         try {
             scanWakeLock?.let { if (it.isHeld) it.release() }
             AppLogger.d(DIAG_TAG, "ScanWakeLock released")
@@ -261,6 +279,7 @@ class ForegroundMeshService : Service() {
         } finally { scanWakeLock = null }
         serviceScope.cancel()
         dedupeRef = null
+        NeighborTable.clear()
         super.onDestroy()
     }
 
@@ -337,6 +356,18 @@ private fun ByteArray.toLongBE(): Long {
     var r = 0L
     for (b in this) r = (r shl 8) or (b.toLong() and 0xFF)
     return r
+}
+
+private fun parseHelloPayload(payload: ByteArray, seenVia: String): List<Neighbor.Extended> {
+    val out = ArrayList<Neighbor.Extended>(payload.size / 5)
+    var off = 0
+    while (off + 5 <= payload.size) {
+        val nodeId = payload.copyOfRange(off, off + 4).toHex()
+        val rssi = payload[off + 4].toInt()
+        out += Neighbor.Extended(nodeId = nodeId, rssi = rssi, seenVia = seenVia)
+        off += 5
+    }
+    return out
 }
 
 private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
