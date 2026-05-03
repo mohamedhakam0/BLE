@@ -39,9 +39,15 @@ import java.util.Arrays
 enum class PacketType(val value: Byte) {
     HELLO(0x01),
     CHAT(0x02),
-    ACK(0x03);
+    ACK(0x03),
+    LEAVE(0x04);
 
     companion object {
+        const val TYPE_HELLO: Byte = 0x01
+        const val TYPE_CHAT: Byte = 0x02
+        const val TYPE_ACK: Byte = 0x03
+        const val TYPE_LEAVE: Byte = 0x04
+
         fun fromValue(value: Byte): PacketType? = entries.firstOrNull { it.value == value }
     }
 }

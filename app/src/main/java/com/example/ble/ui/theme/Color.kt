@@ -1,6 +1,7 @@
 /**
  * Material color palette definitions used by the app theme.
  */
+
 package com.example.ble.ui.theme
 
 import androidx.compose.ui.graphics.Color

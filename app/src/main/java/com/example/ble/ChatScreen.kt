@@ -6,7 +6,6 @@
  */
 package com.example.ble
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -90,15 +89,6 @@ fun ChatScreen(
     val focusManager = LocalFocusManager.current
 
     var inputFocused by remember { mutableStateOf(false) }
-
-    BackHandler {
-        if (inputFocused) {
-            keyboardController?.hide()
-            focusManager.clearFocus(force = true)
-        } else {
-            onBack()
-        }
-    }
 
     // Hidden triple-tap gesture state
     var tapCount by remember { mutableIntStateOf(0) }

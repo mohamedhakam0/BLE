@@ -47,7 +47,7 @@
  * 1. onScanResult() called by Android BLE system
  * 2. Extract service data for UUID 12E61727-B41A-45D9-A60F-7C3B4E1D9F2A
  * 3. Verify size: 41-250 bytes (skip if not our packet size)
- * 4. Call PacketSerializer.deserialize() → MeshPacket or null
+ * 4. Call PacketSerializer.deserialize() -> MeshPacket or null
  * 5. If valid MeshPacket, call onPacketReceived callback
  *
  * Interactions:
@@ -93,13 +93,14 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import android.util.Log
 import androidx.core.content.ContextCompat
 import java.util.UUID
 
 class BleScanner(
     private val context: Context,
     private val bluetoothAdapter: BluetoothAdapter?,
-    private val onPacketReceived: (MeshPacket) -> Unit
+    private val onPacketReceived: (MeshPacket, Int) -> Unit
 ) {
 
     companion object {
@@ -155,7 +156,10 @@ class BleScanner(
             return false
         }
         return try {
-            scanner.startScan(buildFilters(), buildScanSettings(), scanCallback)
+            val filters = buildFilters()
+            val settings = buildScanSettings()
+            Log.i("BLE", "Scanner starting with filters: ${filters.map { it.serviceUuid?.uuid.toString() }}")
+            scanner.startScan(filters, settings, scanCallback)
             _isScanning = true
             watchdogHandler.removeCallbacks(watchdogRunnable)
             watchdogHandler.postDelayed(watchdogRunnable, WATCHDOG_PERIOD_MS)
@@ -183,21 +187,21 @@ class BleScanner(
 
     // ── Private helpers ────────────────────────────────────────────────────────
 
-    private fun buildFilters(): List<ScanFilter> =
-        listOf(
-            // Empty filter: receive all advertisements; we manually check serviceData.
-            // This avoids vendor/OS quirks where the hardware filter silently drops
-            // extended/Coded PHY advertisements.
-            ScanFilter.Builder().build()
-        )
+    private fun buildFilters(): List<ScanFilter> {
+        val meshFilter = ScanFilter.Builder()
+            .setServiceUuid(ParcelUuid.fromString("12E61727-B41A-45D9-A60F-7C3B4E1D9F2A"))
+            .build()
+        return listOf(meshFilter)
+    }
 
     private fun buildScanSettings(): ScanSettings {
         val b = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             b.setLegacy(false)
                 .setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED)
         }
+        Log.i("BLE", "ScanSettings: legacy=false phy=ALL_SUPPORTED mode=BALANCED")
         return b.build()
     }
 
@@ -225,8 +229,22 @@ class BleScanner(
         }
 
         private fun process(result: ScanResult) {
-            val record      = result.scanRecord ?: return
-            val serviceData = record.getServiceData(parcelUuid) ?: return
+            val record = result.scanRecord ?: return
+
+            // Primary lookup. Fails silently on Samsung Android 12 for Coded PHY extended PDUs.
+            var serviceData: ByteArray? = record.getServiceData(parcelUuid)
+
+            // Fallback: iterate the raw map and match by UUID value.
+            // Samsung's BLE stack populates serviceData entries but doesn't key them
+            // correctly for getServiceData() when the source PHY is Coded.
+            if (serviceData == null) {
+                serviceData = record.serviceData
+                    ?.entries
+                    ?.firstOrNull { it.key?.uuid == SERVICE_UUID }
+                    ?.value
+            }
+
+            if (serviceData == null) return
 
             // NOTE: Do not attempt self-loop filtering via BluetoothAdapter.address.
             // On Android 12+ the local MAC address is restricted and requires
@@ -236,15 +254,17 @@ class BleScanner(
             // Pre-filter by size before touching the deserializer.
             if (serviceData.size < MIN_PACKET_BYTES || serviceData.size > MAX_PACKET_BYTES) return
 
+            com.example.ble.debug.StressTestManager.onRssiObserved(result.rssi)
+
             AppLogger.d(DIAG_TAG,
                 "Scanner.onScanResult(): serviceDataLen=${serviceData.size} rssi=${result.rssi}")
 
             val packet = PacketSerializer.deserialize(serviceData) ?: run {
-                AppLogger.d(DIAG_TAG, "Scanner.deserialize(): null len=${serviceData.size}")
+                Log.v("BLE", "Scanner.deserialize(): null len=${serviceData.size}")
                 return
             }
 
-            onPacketReceived(packet)
+            onPacketReceived(packet, result.rssi)
         }
     }
 }

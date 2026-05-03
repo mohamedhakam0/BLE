@@ -21,13 +21,21 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import com.example.ble.AppLogger
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.util.LinkedHashMap
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.random.Random
 
 /**
  * Foreground service that keeps the mesh radio running indefinitely.
@@ -52,8 +60,14 @@ class ForegroundMeshService : Service() {
 
         const val ACTION_PACKET_RECEIVED = "com.peerreach.PACKET_RECEIVED"
         const val EXTRA_PACKET_BYTES = "packet_bytes"
+        const val ACTION_QUIT = "com.example.ble.ACTION_QUIT"
 
-        @Volatile private var dedupeRef: LinkedHashMap<Long, Boolean>? = null
+        private val _peerJoinedEvent = MutableSharedFlow<String>(extraBufferCapacity = 32)
+        private val _peerLeftEvent = MutableSharedFlow<String>(extraBufferCapacity = 32)
+        val peerJoinedEvent: SharedFlow<String> = _peerJoinedEvent.asSharedFlow()
+        val peerLeftEvent: SharedFlow<String> = _peerLeftEvent.asSharedFlow()
+
+        @Volatile private var dedupeRef: PacketCache? = null
         @Volatile private var lastServiceCreatedAt: Long = 0L
         @Volatile private var lastScanEventAt: Long = 0L
 
@@ -67,23 +81,30 @@ class ForegroundMeshService : Service() {
 
         fun addSeenMsgIds(msgIds: List<Long>) {
             val ref = dedupeRef ?: return
-            synchronized(ref) {
-                for (id in msgIds) {
-                    ref[id] = true
-                }
+            for (id in msgIds) {
+                ref.isDuplicate(id)
             }
         }
 
         fun getDebugState(): String = "createdAt=$lastServiceCreatedAt lastScanEventAt=$lastScanEventAt"
     }
 
-    // LRU dedupe cache — keeps last 200 msgIds in memory.
-    private val seenPackets: LinkedHashMap<Long, Boolean> = object : LinkedHashMap<Long, Boolean>(256, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Boolean>): Boolean = size > 200
-    }
+    private val packetCache = PacketCache()
 
     private var scanner: BleScanner? = null
     private var advertiser: BleAdvertiser? = null
+    private var lastScannerRestartAt: Long = 0L
+    private lateinit var nodeIdentity: NodeIdentity
+    private var helloBeaconManager: HelloBeaconManager? = null
+    private var myNodeIdHex: String = ""
+    private val peerMap = ConcurrentHashMap<String, PeerEntry>()
+    private val quitReceiver: BroadcastReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == ACTION_QUIT) {
+                broadcastLeaveAndStop()
+            }
+        }
+    }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val contactNicknameCache: MutableMap<String, String> = java.util.concurrent.ConcurrentHashMap()
@@ -113,10 +134,23 @@ class ForegroundMeshService : Service() {
 
             // If app is foreground and we haven't seen any scan results in a while,
             // restart scanning proactively.
-            if (isAppInForeground() && (s != null) && (!s.isScanning || ageMs > 30_000L)) {
-                AppLogger.w(DIAG_TAG, "scanHealth: restarting scanner (reason=${if (!s.isScanning) "notRunning" else "stalled"})")
-                s.stopScanning()
-                s.startScanning()
+            val inTdmGap = advertiser?.isTdmGapActive ?: false
+            if (isAppInForeground() && (s != null) && (!s.isScanning || ageMs > 60_000L)) {
+                if (inTdmGap) {
+                    AppLogger.d(DIAG_TAG, "scanHealth: skipping restart — TDM gap active, scanner has radio")
+                } else {
+                    val restartNow = System.currentTimeMillis()
+                    val sinceLastRestart = restartNow - lastScannerRestartAt
+                    if (sinceLastRestart < 30_000L) {
+                        AppLogger.d(DIAG_TAG, "scanHealth: skipping restart — cooldown (${sinceLastRestart}ms since last)")
+                        mainHandler.postDelayed(this, 10_000L)
+                        return
+                    }
+                    lastScannerRestartAt = restartNow
+                    AppLogger.w(DIAG_TAG, "scanHealth: restarting scanner (reason=${if (!s.isScanning) "notRunning" else "stalled"})")
+                    s.stopScanning()
+                    s.startScanning()
+                }
             }
             mainHandler.postDelayed(this, 10_000L)
         }
@@ -125,7 +159,7 @@ class ForegroundMeshService : Service() {
     override fun onCreate() {
         super.onCreate()
         lastServiceCreatedAt = System.currentTimeMillis()
-        dedupeRef = seenPackets
+        dedupeRef = packetCache
 
         createNotificationChannel()
         startForeground(NOTIF_ID, buildServiceNotification())
@@ -134,8 +168,22 @@ class ForegroundMeshService : Service() {
         val adapter = bluetoothManager.adapter
 
         advertiser = BleAdvertiser(adapter)
+        advertiser?.clearQueue()
 
-        val nodeIdentity = NodeIdentity(applicationContext)
+        nodeIdentity = NodeIdentity(applicationContext)
+        val myNodeIdBytes = nodeIdentity.getOrCreateIdentity().senderId
+        myNodeIdHex = myNodeIdBytes.toHex()
+        NeighborTable.clear()
+        NeighborTable.setSelfNodeId(myNodeIdHex)
+
+        runCatching {
+            ContextCompat.registerReceiver(
+                this,
+                quitReceiver,
+                IntentFilter(ACTION_QUIT),
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+        }.onFailure { AppLogger.w(DIAG_TAG, "Failed to register quitReceiver: ${it.message}") }
 
         serviceScope.launch {
             runCatching {
@@ -146,31 +194,123 @@ class ForegroundMeshService : Service() {
             }.onFailure { AppLogger.w(DIAG_TAG, "contact cache load failed: ${it.message}") }
         }
 
-        scanner = BleScanner(applicationContext, adapter) { packet ->
+        scanner = BleScanner(applicationContext, adapter) { packet: MeshPacket, rssi: Int ->
             lastScanEventAt = System.currentTimeMillis()
+            Log.i(
+                "MeshService",
+                "RX msgId=${packet.msgId.toHex()} type=${packet.type} from=${packet.senderId.toHex()} ttl=${packet.ttl.toInt() and 0xFF} hop=${packet.hopCount.toInt() and 0xFF} rssi=$rssi"
+            )
+
+            val localSenderId = nodeIdentity.getOrCreateIdentity().senderId
+            val senderIdHex = packet.senderId.toHex()
+            if (!packet.senderId.contentEquals(localSenderId)) {
+                val now = System.currentTimeMillis()
+                val existing = peerMap.put(
+                    senderIdHex,
+                    PeerEntry(
+                        lastSeen = now,
+                        minHopCount = packet.hopCount.toInt() and 0xFF
+                    )
+                )
+                if (existing == null) {
+                    Log.i("MeshService", "PEER JOINED: $senderIdHex (via ${packet.type})")
+                    _peerJoinedEvent.tryEmit(senderIdHex)
+                    updateNotification()
+                }
+            }
+
+            val msgIdLong = runCatching { packet.msgId.toLongBE() }.getOrNull()
+            if (msgIdLong != null && packetCache.isDuplicate(msgIdLong)) {
+                Log.v("MeshService", "DEDUP drop msgId=${packet.msgId.toHex()}")
+                return@BleScanner
+            }
+
+            val isForMe = packet.receiverId.contentEquals(localSenderId)
+            val isBroadcast = packet.receiverId.all { it == 0xFF.toByte() }
+            val ttl = packet.ttl.toInt() and 0xFF
+            val shouldRelay = ttl > 0 && !packet.receiverId.contentEquals(localSenderId)
+            if (shouldRelay) {
+                val relayTtl = if (packet.type == PacketType.ACK) {
+                    minOf((ttl - 1), 2).toByte()
+                } else {
+                    (ttl - 1).toByte()
+                }
+                val relayPacket = packet.copy(
+                    ttl = relayTtl,
+                    hopCount = ((packet.hopCount.toInt() and 0xFF) + 1).toByte()
+                )
+                val jitterMs = Random.nextLong(10L, 51L)
+                Log.i(
+                    "MeshService",
+                    "RELAY msgId=${packet.msgId.toHex()} newTtl=${relayPacket.ttl.toInt() and 0xFF} newHop=${relayPacket.hopCount.toInt() and 0xFF} jitter=${jitterMs}ms"
+                )
+                serviceScope.launch {
+                    delay(jitterMs)
+                    advertiser?.enqueue(relayPacket, isRelay = true)
+                }
+            }
 
             // Only process packets meant for me (or broadcast). Anything else is mesh noise.
-            val myId = nodeIdentity.getOrCreateIdentity().senderId
-            val isForMe = packet.receiverId.contentEquals(myId)
-            val isBroadcast = packet.receiverId.all { it == 0xFF.toByte() }
             if (!isForMe && !isBroadcast) return@BleScanner
+            if (isForMe) {
+                Log.i("MeshService", "DELIVER msgId=${packet.msgId.toHex()} type=${packet.type} to self")
+            }
+
+             if (packet.type == PacketType.HELLO) {
+                  if (packet.ttl != 1.toByte()) return@BleScanner
+
+                  val senderId = senderIdHex
+                  val now = System.currentTimeMillis()
+                  if (senderId == myNodeIdHex) return@BleScanner
+
+                 updatePeer(senderId, packet.hopCount.toInt())
+                // Direct neighbor from scan RSSI (hop 0).
+                NeighborTable.upsert(
+                     NeighborEntry(
+                         nodeId = senderId,
+                         rssi = rssi,
+                         lastSeen = now,
+                         hopCount = 0,
+                         seenVia = null
+                     )
+                 )
+
+                val extended = parseHelloPayload(packet.payload, senderNodeId = senderId)
+                val filtered = extended.filter { it.nodeId != myNodeIdHex && it.nodeId != senderId }
+                if (filtered.isNotEmpty()) {
+                    NeighborTable.upsertAll(filtered)
+                }
+
+                AppLogger.log("HELLO", "Neighbor: $senderId RSSI=${rssi} dBm, extended=${filtered.size} entries")
+                return@BleScanner
+            }
+
+            if (packet.type == PacketType.LEAVE) {
+                val departingSenderId = packet.senderId.toHex()
+                AppLogger.i("MeshService", "LEAVE received from $departingSenderId - removing from peer map")
+
+                peerMap.remove(departingSenderId)
+                NeighborTable.removeNode(departingSenderId)
+                updateNotification()
+                _peerLeftEvent.tryEmit(departingSenderId)
+
+                return@BleScanner
+            }
 
             // If this is an ACK for me, cancel any pending retries for that msgId.
             if (packet.type == PacketType.ACK && isForMe) {
-                advertiser?.cancelRetries(packet.msgId)
-            }
+                val referencedMsgId = packet.payload
+                    .takeIf { it.size >= 8 }
+                    ?.copyOfRange(0, 8)
 
-            // ── 1. DEDUP — must be the very first check for CHAT/HELLO addressed to me/broadcast (never ACK) ──
-            if (packet.type != PacketType.ACK) {
-                val msgIdLong = runCatching { packet.msgId.toLongBE() }.getOrNull()
-                if (msgIdLong != null) {
-                    synchronized(seenPackets) {
-                        if (seenPackets.containsKey(msgIdLong)) {
-                            AppLogger.d("BLE", "BLE: Duplicate packet dropped msgId=$msgIdLong")
-                            return@BleScanner
-                        }
-                        seenPackets[msgIdLong] = true
-                    }
+                if (referencedMsgId != null) {
+                    Log.i(
+                        "MeshService",
+                        "ACK received for originalMsgId=${referencedMsgId.toHex()} from=${packet.senderId.toHex()}"
+                    )
+                    advertiser?.cancelRetries(referencedMsgId)
+                } else {
+                    Log.w("MeshService", "ACK payload missing referenced msgId from=${packet.senderId.toHex()}")
                 }
             }
 
@@ -178,18 +318,18 @@ class ForegroundMeshService : Service() {
             if (packet.type == PacketType.CHAT && isForMe) {
                 val ack = MeshPacket(
                     type       = PacketType.ACK,
-                    msgId      = packet.msgId,
-                    senderId   = myId,
+                    msgId      = Random.nextBytes(8),
+                    senderId   = localSenderId,
                     receiverId = packet.senderId,
-                    ttl        = 7.toByte(),
+                    ttl        = 6.toByte(),
                     hopCount   = 0.toByte(),
                     timestamp  = (System.currentTimeMillis() / 1000L).toInt(),
-                    payloadLen = 0.toByte(),
+                    payloadLen = 8.toByte(),
                     authTag    = ByteArray(16),
-                    payload    = byteArrayOf()
+                    payload    = packet.msgId.copyOf()
                 )
-                advertiser?.broadcast(PacketSerializer.serialize(ack))
-                AppLogger.d(DIAG_TAG, "ACK sent for msgId=${packet.msgId.toHex()} to ${packet.senderId.toHex()}")
+                advertiser?.enqueue(ack)
+                AppLogger.d(DIAG_TAG, "ACK sent for msgId=${ack.msgId.toHex()} original=${packet.msgId.toHex()} to ${packet.senderId.toHex()}")
             }
 
             // ── 2. Notification gate ──
@@ -208,7 +348,7 @@ class ForegroundMeshService : Service() {
                 )
             }
 
-            // ── 3. Re-serialise for the local broadcast (ChatViewModel needs bytes) ──
+            // ── 3. Forward packet bytes to the app layer ──
              val broadcastBytes = PacketSerializer.serialize(packet)
              val intent = Intent(ACTION_PACKET_RECEIVED).apply {
                  setPackage(packageName) // app-private broadcast
@@ -230,12 +370,35 @@ class ForegroundMeshService : Service() {
 
         val started = scanner?.startScanning() == true
         AppLogger.d(TAG, "Scanner start requested, started=$started")
+
+        helloBeaconManager = advertiser?.let { adv ->
+            HelloBeaconManager(this, adv, myNodeIdBytes).also { it.start(serviceScope) }
+        }
+        AppLogger.d(TAG, "HelloBeaconManager started")
+
+        serviceScope.launch {
+            while (isActive) {
+                delay(30_000L)
+                NeighborTable.evictStale()
+            }
+        }
+
+        serviceScope.launch {
+            while (isActive) {
+                delay(60_000L)
+                val cutoff = System.currentTimeMillis() - 5 * 60 * 1000L
+                peerMap.entries.removeIf { it.value.lastSeen < cutoff }
+                updateNotification()
+            }
+        }
+
         mainHandler.postDelayed(scanHealthRunnable, 10_000L)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Re-delivery happens when the process returns; also useful as a recovery hook.
-        ensureScannerRunning(reason = "onStartCommand")
+        AppLogger.i("HELLO", "Service starting - will fire HELLO beacon to announce rejoin")
+         // Re-delivery happens when the process returns; also useful as a recovery hook.
+         ensureScannerRunning(reason = "onStartCommand")
 
         if (scanWakeLock?.isHeld != true) {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -250,17 +413,22 @@ class ForegroundMeshService : Service() {
 
     override fun onDestroy() {
         mainHandler.removeCallbacks(scanHealthRunnable)
-        AppLogger.d(DIAG_TAG, "Service.onDestroy state=${getDebugState()}")
-        runCatching { unregisterReceiver(scanResumeReceiver) }
         scanner?.stopScanning(); scanner = null
         advertiser?.stopAll(); advertiser = null
+        helloBeaconManager?.stop(); helloBeaconManager = null
+        NeighborTable.clear()
+        peerMap.clear()
         try {
             scanWakeLock?.let { if (it.isHeld) it.release() }
-            AppLogger.d(DIAG_TAG, "ScanWakeLock released")
         } catch (_: Exception) {
-        } finally { scanWakeLock = null }
+        } finally {
+            scanWakeLock = null
+        }
+        runCatching { unregisterReceiver(quitReceiver) }
+        runCatching { unregisterReceiver(scanResumeReceiver) }
         serviceScope.cancel()
         dedupeRef = null
+        AppLogger.i("MeshService", "ForegroundMeshService destroyed cleanly after LEAVE")
         super.onDestroy()
     }
 
@@ -281,30 +449,65 @@ class ForegroundMeshService : Service() {
         }
     }
 
+    fun broadcastLeaveAndStop() {
+        serviceScope.launch {
+            AppLogger.i("HELLO", "Broadcasting LEAVE packet before shutdown")
+            val sender = nodeIdentity.getOrCreateIdentity().senderId
+            val leavePacket = MeshPacket(
+                type = PacketType.LEAVE,
+                msgId = Random.nextBytes(8),
+                senderId = sender,
+                receiverId = byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte()),
+                ttl = 3,
+                hopCount = 0,
+                timestamp = (System.currentTimeMillis() / 1000L).toInt(),
+                payloadLen = 0,
+                authTag = ByteArray(16),
+                payload = byteArrayOf()
+            )
+            advertiser?.enqueue(leavePacket)
+            delay(600L)
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+            stopSelf()
+        }
+    }
+
+    fun updatePeer(senderId: String, hopCount: Int) {
+        val normalized = senderId.trim().lowercase()
+        if (normalized == myNodeIdHex) return
+        peerMap[normalized] = PeerEntry(System.currentTimeMillis(), hopCount)
+        updateNotification()
+    }
+
+    private fun updateNotification() {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(NOTIF_ID, buildServiceNotification())
+    }
+
     private fun buildServiceNotification(): Notification {
         val pending = PendingIntent.getActivity(
             this, 0,
             packageManager.getLaunchIntentForPackage(packageName),
             PendingIntent.FLAG_UPDATE_CURRENT or if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0
         )
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-                .setContentTitle("Peer Reach")
-                .setContentText("Mesh is running")
-                .setContentIntent(pending)
-                .setOngoing(true)
-                .build()
-        } else {
-            @Suppress("DEPRECATION")
-            Notification.Builder(this)
-                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-                .setContentTitle("Peer Reach")
-                .setContentText("Mesh is running")
-                .setContentIntent(pending)
-                .setOngoing(true)
-                .build()
-        }
+        val quitIntent = Intent(ACTION_QUIT).also { it.setPackage(packageName) }
+        val quitPendingIntent = PendingIntent.getBroadcast(
+            this,
+            0,
+            quitIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val peerCount = peerMap.size
+        val peerLabel = if (peerCount == 1) "peer" else "peers"
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Peer Reach")
+            .setContentText("Mesh is running • $peerCount $peerLabel")
+            .setContentIntent(pending)
+            .setOngoing(true)
+            .addAction(0, "Quit Peer Reach", quitPendingIntent)
+            .build()
     }
 
     private fun ensureScannerRunning(reason: String) {
@@ -330,6 +533,38 @@ class ForegroundMeshService : Service() {
             AppLogger.d(DIAG_TAG, "ensureScannerRunning($reason): scanner already running")
         }
     }
+
+    private fun parseHelloPayload(payload: ByteArray, senderNodeId: String): List<NeighborEntry> {
+        if (payload.isEmpty()) return emptyList()
+
+        val count = payload[0].toInt() and 0xFF
+        if (count == 0) return emptyList()
+
+        val requiredSize = 1 + (count * 5)
+        if (requiredSize > payload.size) {
+            AppLogger.w("HELLO", "Malformed HELLO payload from=$senderNodeId count=$count payloadLen=${payload.size}")
+            return emptyList()
+        }
+
+        val now = System.currentTimeMillis()
+        val out = ArrayList<NeighborEntry>(count)
+        var offset = 1
+        repeat(count) {
+            val nodeId = payload.copyOfRange(offset, offset + 4).toHex()
+            val rssi = payload[offset + 4].toInt()
+            out.add(
+                NeighborEntry(
+                    nodeId = nodeId,
+                    rssi = rssi,
+                    lastSeen = now,
+                    hopCount = 1,
+                    seenVia = senderNodeId
+                )
+            )
+            offset += 5
+        }
+        return out
+    }
 }
 
 private fun ByteArray.toLongBE(): Long {
@@ -340,3 +575,8 @@ private fun ByteArray.toLongBE(): Long {
 }
 
 private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+
+private data class PeerEntry(
+    val lastSeen: Long,
+    val minHopCount: Int
+)

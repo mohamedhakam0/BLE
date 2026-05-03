@@ -3,6 +3,7 @@
  *
  * Provides light/dark color schemes with optional dynamic colors on Android 12+.
  */
+
 package com.example.ble.ui.theme
 
 import android.app.Activity
@@ -38,8 +39,8 @@ private val LightColorScheme = lightColorScheme(
     */
 )
 
-/** Applies app-wide Material theme and typography to [content]. */
 @Composable
+/** Applies app-wide Material theme and typography to [content]. */
 fun BLETheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     // Dynamic color is available on Android 12+

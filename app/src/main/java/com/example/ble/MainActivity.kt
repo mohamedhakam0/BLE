@@ -16,8 +16,17 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Base64
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -25,16 +34,25 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.NetworkWifi
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ble.ui.QrGenerateScreen
 import com.example.ble.ui.LogViewerScreen
 import com.example.ble.ui.QrScanScreen
@@ -43,9 +61,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.util.Calendar
 import java.util.Locale
+
+private val EaseInOutSine = CubicBezierEasing(0.37f, 0f, 0.63f, 1f)
 
 /** Top-level destinations rendered by MainActivity. */
 enum class MainScreen {
@@ -53,7 +72,9 @@ enum class MainScreen {
     CHAT,
     QR_GENERATE,
     QR_SCAN,
-    LOGS
+    LOGS,
+    NEIGHBORS,
+    STRESS_TEST
 }
 
 /** Activity hosting all main Peer Reach composable screens. */
@@ -101,6 +122,12 @@ class MainActivity : ComponentActivity() {
             BLETheme {
                 var currentScreen by remember { mutableStateOf(MainScreen.CONTACTS) }
                 var activeContact by remember { mutableStateOf<ContactLastMessageRow?>(null) }
+                val contactsFlow = remember { contactRepository.observeContactsWithLastMessage() }
+                val contacts by contactsFlow.collectAsState(initial = emptyList())
+
+                val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+                val adapter = bluetoothManager.adapter
+                val bleAdvertiser = remember { BleAdvertiser(adapter) }
 
                 // notification deep link
                 LaunchedEffect(Unit) {
@@ -134,7 +161,9 @@ class MainActivity : ComponentActivity() {
                             },
                             onShowQr = { currentScreen = MainScreen.QR_GENERATE },
                             onScanQr = { currentScreen = MainScreen.QR_SCAN },
-                            onShowLogs = { currentScreen = MainScreen.LOGS }
+                            onShowLogs = { currentScreen = MainScreen.LOGS },
+                            onShowNeighbors = { currentScreen = MainScreen.NEIGHBORS },
+                            onShowStress = { currentScreen = MainScreen.STRESS_TEST }
                         )
                     }
 
@@ -160,15 +189,11 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
-                            val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-                            val adapter = bluetoothManager.adapter
-                            val advertiser = remember { BleAdvertiser(adapter) }
-
                             val vm = remember(contact.senderId) {
                                 ChatViewModel(
                                     app = application as android.app.Application,
                                     nodeIdentity = nodeIdentity,
-                                    advertiser = advertiser,
+                                    advertiser = bleAdvertiser,
                                     messageRepository = messageRepository,
                                     contactId = contact.senderId,
                                     contactSenderIdHex = contact.senderId
@@ -205,6 +230,29 @@ class MainActivity : ComponentActivity() {
 
                     MainScreen.LOGS -> {
                         LogViewerScreen(
+                            onBack = { currentScreen = MainScreen.CONTACTS }
+                        )
+                    }
+
+                    MainScreen.NEIGHBORS -> {
+                        BackHandler { currentScreen = MainScreen.CONTACTS }
+                        NeighborListScreen()
+                    }
+
+                    MainScreen.STRESS_TEST -> {
+                        val stressVm: com.example.ble.debug.StressTestViewModel =
+                            viewModel(
+                                key = "stress_vm",
+                                factory = com.example.ble.debug.StressTestViewModel.Factory(
+                                    application = application as android.app.Application,
+                                    nodeIdentity = nodeIdentity,
+                                    advertiser = bleAdvertiser,
+                                    messageRepository = messageRepository,
+                                    contactRepository = contactRepository
+                                )
+                            )
+                        com.example.ble.debug.StressTestScreen(
+                            viewModel = stressVm,
                             onBack = { currentScreen = MainScreen.CONTACTS }
                         )
                     }
@@ -441,47 +489,136 @@ private fun ContactsHomeScreen(
     onOpenChat: (ContactLastMessageRow) -> Unit,
     onShowQr: () -> Unit,
     onScanQr: () -> Unit,
-    onShowLogs: () -> Unit
+    onShowLogs: () -> Unit,
+    onShowNeighbors: () -> Unit,
+    onShowStress: () -> Unit
 ) {
     val contactsFlow = remember { contactRepository.observeContactsWithLastMessage() }
     val contacts by contactsFlow.collectAsState(initial = emptyList())
+    val neighbors = NeighborTable.neighbors.collectAsStateWithLifecycle().value
+    val directCount = neighbors.count { it.hopCount == 0 }
 
-    Column(modifier = Modifier.fillMaxSize().statusBarsPadding().padding(16.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(onClick = onShowQr, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.QrCode2, contentDescription = "My QR")
-                Spacer(Modifier.width(4.dp))
-                Text("My QR")
-            }
-            Button(onClick = onScanQr, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.CameraAlt, contentDescription = "Scan QR")
-                Spacer(Modifier.width(4.dp))
-                Text("Scan QR")
+    val pulseScale = remember { Animatable(1f) }
+    val rippleProgress = remember { Animatable(0f) }
+    var previousDirectCount by remember { mutableStateOf(directCount) }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "network_breath")
+    val breathingScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.06f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2000, easing = EaseInOutSine),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "network_breath_scale"
+    )
+
+    val effectiveScale = pulseScale.value * if (directCount > 0) breathingScale else 1f
+
+    LaunchedEffect(directCount) {
+        if (directCount != previousDirectCount) {
+            pulseScale.snapTo(1f)
+            pulseScale.animateTo(1.35f, animationSpec = tween(180))
+            pulseScale.animateTo(1f, animationSpec = tween(170))
+
+            rippleProgress.snapTo(0f)
+            rippleProgress.animateTo(1f, animationSpec = tween(600))
+        }
+        previousDirectCount = directCount
+    }
+
+    Box(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(onClick = onShowQr, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Filled.QrCode2, contentDescription = "My QR")
+                    Spacer(Modifier.width(4.dp))
+                    Text("My QR")
+                }
+                Button(onClick = onScanQr, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Filled.CameraAlt, contentDescription = "Scan QR")
+                    Spacer(Modifier.width(4.dp))
+                    Text("Scan QR")
+                }
+
+                IconButton(onClick = onShowLogs) {
+                    Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Logs")
+                }
+
+                IconButton(onClick = onShowStress) {
+                    Icon(Icons.Filled.BugReport, contentDescription = "Stress Test")
+                }
             }
 
-            IconButton(onClick = onShowLogs) {
-                Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Logs")
+            Spacer(Modifier.height(12.dp))
+            Text("Chats", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(8.dp))
+
+            if (contacts.isEmpty()) {
+                Text("No contacts yet. Scan a friend's QR.", color = Color.Gray)
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(contacts) { c ->
+                        ContactConversationRow(
+                            contact = c,
+                            onClick = { onOpenChat(c) },
+                            contactRepository = contactRepository
+                        )
+                    }
+                }
             }
         }
 
-        Spacer(Modifier.height(12.dp))
-        Text("Chats", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(8.dp))
+        NetworkFab(
+            directCount = directCount,
+            effectiveScale = effectiveScale,
+            rippleProgress = rippleProgress.value,
+            onClick = onShowNeighbors,
+            modifier = Modifier.align(androidx.compose.ui.Alignment.BottomEnd).padding(24.dp)
+        )
+    }
+}
 
-        if (contacts.isEmpty()) {
-            Text("No contacts yet. Scan a friend's QR.", color = Color.Gray)
-        } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(contacts) { c ->
-                    ContactConversationRow(
-                        contact = c,
-                        onClick = { onOpenChat(c) },
-                        contactRepository = contactRepository
-                    )
+@Composable
+private fun NetworkFab(
+    directCount: Int,
+    effectiveScale: Float,
+    rippleProgress: Float,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    maxRippleRadius: Dp = 48.dp
+) {
+    val rippleColor = MaterialTheme.colorScheme.primary
+
+    Box(modifier = modifier.size(64.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
+        if (rippleProgress in 0f..0.999f) {
+            val alpha = 0.5f * (1f - rippleProgress)
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                drawCircle(
+                    color = rippleColor.copy(alpha = alpha),
+                    radius = maxRippleRadius.toPx() * rippleProgress
+                )
+            }
+        }
+
+        FloatingActionButton(
+            onClick = onClick,
+            modifier = Modifier.graphicsLayer {
+                scaleX = effectiveScale
+                scaleY = effectiveScale
+            }
+        ) {
+            BadgedBox(
+                badge = {
+                    if (directCount > 0) {
+                        Badge { Text(directCount.toString()) }
+                    }
                 }
+            ) {
+                Icon(Icons.Filled.NetworkWifi, contentDescription = "Neighbors")
             }
         }
     }
@@ -489,8 +626,10 @@ private fun ContactsHomeScreen(
 
 /** Formats message timestamps for contacts list preview rows. */
 private fun formatTime(timestampMs: Long): String {
-    val fmt = SimpleDateFormat("HH:mm", Locale.getDefault())
-    return fmt.format(Date(timestampMs))
+    val cal = Calendar.getInstance().apply { timeInMillis = timestampMs }
+    val h = cal.get(Calendar.HOUR_OF_DAY)
+    val m = cal.get(Calendar.MINUTE)
+    return String.format(Locale.getDefault(), "%02d:%02d", h, m)
 }
 
 /** Encodes raw bytes as lowercase hex without separators. */

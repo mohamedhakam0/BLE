@@ -1,10 +1,11 @@
+package com.example.ble
+
 /**
  * Builds and posts message notifications for incoming mesh chat packets.
  *
  * Notifications are grouped per sender using `MessagingStyle` and a deterministic notification ID.
  * The helper also keeps a small in-memory history so expanding a notification shows recent lines.
  */
-package com.example.ble
 
 import android.Manifest
 import android.app.NotificationChannel
@@ -22,7 +23,6 @@ import androidx.core.content.ContextCompat
 import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 
-/** Utility object for notification channel management and per-conversation updates. */
 object NotificationHelper {
 
     private const val CHANNEL_ID = "mesh_messages"

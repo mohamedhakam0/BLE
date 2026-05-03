@@ -31,7 +31,7 @@ fun exampleBasicBroadcast(bluetoothAdapter: BluetoothAdapter?) {
 
 /** Starts scanning and prints decoded messages to stdout for diagnostics. */
 fun exampleScanForMessages(context: android.content.Context, bluetoothAdapter: BluetoothAdapter?) {
-    val scanner = BleScanner(context, bluetoothAdapter) { packet ->
+    val scanner = BleScanner(context, bluetoothAdapter) { packet, _ ->
         val payloadText = packet.payload.decodeToString()
         println("Received: '$payloadText'")
         println("  Sender: ${packet.senderId.joinToString("") { "%02x".format(it) }}")

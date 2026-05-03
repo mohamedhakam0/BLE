@@ -1,13 +1,9 @@
-/**
- * Basic host-side unit tests for project sanity checks.
- */
 package com.example.ble
 
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
-import org.junit.Assert.*
-
-/** Simple sample unit test running on the JVM. */
+/** Basic host-side unit test for project sanity checks. */
 class ExampleUnitTest {
     @Test
     fun addition_isCorrect() {

@@ -164,7 +164,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
-import androidx.core.content.ContextCompat
 import androidx.core.content.ContextCompat.*
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -208,8 +207,22 @@ class ChatViewModel(
 
         when (packet.type) {
             PacketType.ACK -> {
-                val msgIdLong = packet.msgId.toLongBE()
+                val referencedMsgIdBytes = packet.payload
+                    .takeIf { it.size >= 8 }
+                    ?.copyOfRange(0, 8)
+                    ?: run {
+                        AppLogger.w("ChatVM", "ACK dropped — missing referenced msgId payload")
+                        return
+                    }
+
+                val msgIdLong = referencedMsgIdBytes.toLongBE()
+                if (DebugBuildFlags.isDebug) {
+                    com.example.ble.debug.StressTestManager.onAckReceived(
+                        referencedMsgIdBytes.joinToString("") { "%02x".format(it) }
+                    )
+                }
                 AppLogger.d("ChatVM", "ACK received msgId=$msgIdLong contactId=$contactId")
+
                 viewModelScope.launch(Dispatchers.IO) {
                     val result = messageRepository.updateStatus(msgIdLong, MessageStatus.DELIVERED)
                     AppLogger.d("ChatVM", "ACK updateStatus msgId=$msgIdLong updated=$result")
@@ -217,10 +230,20 @@ class ChatViewModel(
             }
 
             PacketType.CHAT -> {
-                if (packet.senderId.toHex() != contactSenderIdHex.lowercase()) return
+                val incomingSender = packet.senderId.toHex().trim().lowercase()
+                val expectedSender = contactSenderIdHex.trim().lowercase()
+
+                AppLogger.d("ChatVM", "CHAT received: sender=$incomingSender expected=$expectedSender contactId=$contactId")
+
+                if (incomingSender != expectedSender) {
+                    AppLogger.w("ChatVM", "CHAT dropped — sender mismatch: incoming=$incomingSender expected=$expectedSender")
+                    return
+                }
 
                 val msgIdLong = packet.msgId.toLongBE()
-                val text      = packet.payload.decodeToString()
+                val text = packet.payload.decodeToString()
+
+                AppLogger.d("ChatVM", "CHAT storing: msgId=$msgIdLong text='${text.take(40)}' contactId=$contactId")
 
                 viewModelScope.launch(Dispatchers.IO) {
                     messageRepository.upsert(
@@ -292,7 +315,7 @@ class ChatViewModel(
             msgId      = msgIdBytes,
             senderId   = me,
             receiverId = receiverId,
-            ttl        = 7.toByte(),
+            ttl        = 6.toByte(),
             hopCount   = 0.toByte(),
             timestamp  = (System.currentTimeMillis() / 1000L).toInt(),
             payloadLen = payloadBytes.size.toByte(),
@@ -314,7 +337,7 @@ class ChatViewModel(
             )
         }
 
-        advertiser.broadcast(PacketSerializer.serialize(packet))
+        advertiser.enqueue(packet)
     }
 
     fun deleteHistory(contactId: String = this.contactId) {
