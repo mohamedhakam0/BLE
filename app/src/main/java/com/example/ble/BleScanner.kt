@@ -213,8 +213,9 @@ class BleScanner(
             b.setLegacy(false)
                 .setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED)
         }
-        Log.i("BLE", "ScanSettings: legacy=false phy=ALL_SUPPORTED mode=BALANCED")
-        return b.build()
+        val settings = b.build()
+        Log.i("BLE", "ScanSettings: legacy=false phy=ALL_SUPPORTED mode=LOW_LATENCY")
+        return settings
     }
 
     private fun hasRequiredScanPermission(): Boolean =

@@ -286,6 +286,7 @@ private class BleAdvertiserApi26(bluetoothAdapter: BluetoothAdapter?) {
                 val stop = currentAttemptStop
                 currentAttemptStop = null
                 advertiserScope.launch {
+                    autoStopHandler.removeCallbacksAndMessages(null)
                     stopActiveSetAsync()
                     workerHandler.post {
                         AppLogger.d(DIAG_TAG, "Advertiser.preempt(): cancelled active HELLO msgId=$msgIdHex")
