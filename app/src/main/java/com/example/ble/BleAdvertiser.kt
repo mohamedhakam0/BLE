@@ -157,7 +157,7 @@ private class BleAdvertiserApi26(bluetoothAdapter: BluetoothAdapter?) {
         private const val MAX_RETRIES        = 2   // was 3
         // 3 retries × 600ms = 1.8s max ACK air time — was reduced to 2 when
         // ADVERT_DURATION_MS was 5s (15s total). At 600ms, 3 retries is fine.
-        private const val ACK_MAX_RETRIES    = 1   // was 2, ACKs are tiny and always caught first try
+        private const val ACK_MAX_RETRIES    = 2  // was 2, ACKs are tiny and always caught first try
 
         private const val ADVERT_DURATION_MS = 600L  // reduce back from 800ms, data shows delivery within 400ms
         private const val RETRY_JITTER_MS    = 100L     // was 200ms — reduced, jitter less important with TDM
@@ -383,6 +383,25 @@ private class BleAdvertiserApi26(bluetoothAdapter: BluetoothAdapter?) {
             if (containsQueuedMsgId(msgIdPreview)) {
                 AppLogger.d(DIAG_TAG, "Advertiser.enqueue(): msgId=$msgIdPreview already in queue — skipped")
                 return@post
+            }
+
+            // ACK jitter: randomise when the ACK hits the air relative
+            // to the sender's TDM scan window. Without jitter, all ACKs
+            // from a session align to the same phase and are consistently
+            // missed. A random 0–400ms delay spreads them across the
+            // 900ms scan gap window.
+            if (packet.type == PacketType.ACK) {
+                val ackJitterMs = (0L..600L).random()
+                if (ackJitterMs > 0L) {
+                    workerHandler.postDelayed({
+                        if (canceledMsgIds.contains(msgIdPreview)) return@postDelayed
+                        if (containsQueuedMsgId(msgIdPreview)) return@postDelayed
+                        urgentQueue.addLast(job)
+                        Log.i("BLE", "Advertiser.enqueue(): URGENT(ACK) msgId=$msgIdPreview jitter=${ackJitterMs}ms")
+                        drainQueue()
+                    }, ackJitterMs)
+                    return@post
+                }
             }
 
             when (tier) {

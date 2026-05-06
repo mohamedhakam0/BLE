@@ -69,7 +69,7 @@ class ForegroundMeshService : Service() {
 
         @Volatile private var dedupeRef: PacketCache? = null
         @Volatile private var lastServiceCreatedAt: Long = 0L
-        @Volatile private var lastScanEventAt: Long = 0L
+        @Volatile private var lastScanEventAt: Long = System.currentTimeMillis()
 
         fun start(context: Context) {
             val intent = Intent(context, ForegroundMeshService::class.java)

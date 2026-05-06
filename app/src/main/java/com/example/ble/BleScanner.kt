@@ -82,7 +82,6 @@ package com.example.ble
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
@@ -117,7 +116,6 @@ class BleScanner(
     }
 
     private val parcelUuid = ParcelUuid(SERVICE_UUID)
-    private val scanner: BluetoothLeScanner? = bluetoothAdapter?.bluetoothLeScanner
     private var _isScanning = false
 
     /** True if startScan() has been called successfully and we haven't stopped it. */
@@ -130,6 +128,7 @@ class BleScanner(
     private val watchdogRunnable = object : Runnable {
         @SuppressLint("MissingPermission")
         override fun run() {
+            val scanner = bluetoothAdapter?.bluetoothLeScanner
             if (!_isScanning || scanner == null) return
             try { scanner.stopScan(scanCallback) } catch (_: Exception) { }
             try {
@@ -146,8 +145,17 @@ class BleScanner(
 
     @SuppressLint("MissingPermission")
     fun startScanning(): Boolean {
+        val scanner = bluetoothAdapter?.bluetoothLeScanner
+        if (bluetoothAdapter == null) {
+            AppLogger.e(TAG, "BluetoothAdapter is null — BLE not supported on this device")
+            return false
+        }
+        if (!bluetoothAdapter.isEnabled) {
+            AppLogger.e(TAG, "Bluetooth is off — cannot start scanner")
+            return false
+        }
         if (scanner == null) {
-            AppLogger.w(TAG, "BluetoothLeScanner not available")
+            AppLogger.e(TAG, "BluetoothLeScanner unavailable — is Bluetooth enabled?")
             return false
         }
         if (_isScanning) return true
@@ -173,10 +181,14 @@ class BleScanner(
 
     @SuppressLint("MissingPermission")
     fun stopScanning() {
+        val scanner = bluetoothAdapter?.bluetoothLeScanner ?: run {
+            _isScanning = false
+            return
+        }
         if (!_isScanning) return
         watchdogHandler.removeCallbacks(watchdogRunnable)
         try {
-            scanner?.stopScan(scanCallback)
+            scanner.stopScan(scanCallback)
         } catch (e: Exception) {
             AppLogger.e(TAG, "stopScanning: ${e.message}")
         } finally {
@@ -196,7 +208,7 @@ class BleScanner(
 
     private fun buildScanSettings(): ScanSettings {
         val b = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_BALANCED)
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             b.setLegacy(false)
                 .setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED)
