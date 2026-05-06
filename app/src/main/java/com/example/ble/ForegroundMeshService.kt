@@ -309,6 +309,7 @@ class ForegroundMeshService : Service() {
                         "ACK received for originalMsgId=${referencedMsgId.toHex()} from=${packet.senderId.toHex()}"
                     )
                     advertiser?.cancelRetries(referencedMsgId)
+                    com.example.ble.debug.StressTestManager.onAckReceived(referencedMsgId.toHex())
                 } else {
                     Log.w("MeshService", "ACK payload missing referenced msgId from=${packet.senderId.toHex()}")
                 }
