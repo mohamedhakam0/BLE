@@ -140,6 +140,9 @@ class BleAdvertiser(bluetoothAdapter: BluetoothAdapter?) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         impl?.clearQueue()
     }
+
+    fun wasLocallyOriginated(msgIdHex: String): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) impl?.wasLocallyOriginated(msgIdHex) ?: false else false
 }
 
 // Everything below here is strictly API 26+.
@@ -212,6 +215,14 @@ private class BleAdvertiserApi26(bluetoothAdapter: BluetoothAdapter?) {
     // Retry cancellation: tracks msgIds that have been ACKed.
     private val canceledMsgIds = java.util.Collections.newSetFromMap(
         java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    )
+
+    // Track locally originated msgIds to prevent them from being relayed back.
+    // Uses LinkedHashMap to auto-remove oldest entries when cap is exceeded.
+    private val originatedMsgIds: MutableMap<String, Boolean> = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, Boolean>(16, 0.75f, false) {
+            override fun removeEldestEntry(eldest: Map.Entry<String, Boolean>?): Boolean = size > 500
+        }
     )
 
     // ── Tiered queues + state (ALL accessed only on workerHandler) ───────────
@@ -297,6 +308,8 @@ private class BleAdvertiserApi26(bluetoothAdapter: BluetoothAdapter?) {
         }
     }
 
+    fun wasLocallyOriginated(msgIdHex: String): Boolean = originatedMsgIds.containsKey(msgIdHex)
+
     fun broadcast(packetBytes: ByteArray) {
         val packet = PacketSerializer.deserialize(packetBytes)
         if (packet == null) {
@@ -376,6 +389,11 @@ private class BleAdvertiserApi26(bluetoothAdapter: BluetoothAdapter?) {
         )
 
         workerHandler.post {
+            // Track locally originated packets (non-relay) to prevent self-relay
+            if (!isRelay) {
+                originatedMsgIds[msgIdPreview] = true
+            }
+
             if (canceledMsgIds.contains(msgIdPreview)) {
                 AppLogger.d(DIAG_TAG, "Advertiser.enqueue(): msgId=$msgIdPreview already delivered — skipped")
                 return@post

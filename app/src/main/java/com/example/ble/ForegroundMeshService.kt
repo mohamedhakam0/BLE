@@ -230,6 +230,14 @@ class ForegroundMeshService : Service() {
             val ttl = packet.ttl.toInt() and 0xFF
             val shouldRelay = ttl > 0 && !packet.receiverId.contentEquals(localSenderId)
             if (shouldRelay) {
+                if (packet.type == PacketType.ACK) return@BleScanner  // never relay ACKs at the originating node
+
+                // Skip relaying packets we originated locally
+                if (advertiser?.wasLocallyOriginated(packet.msgId.toHex()) == true) {
+                    AppLogger.d(TAG, "RELAY skip: locally originated msgId=${packet.msgId.toHex()}")
+                    return@BleScanner
+                }
+
                 val relayTtl = if (packet.type == PacketType.ACK) {
                     minOf((ttl - 1), 2).toByte()
                 } else {

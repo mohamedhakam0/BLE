@@ -129,6 +129,11 @@ class MainActivity : ComponentActivity() {
                 val adapter = bluetoothManager.adapter
                 val bleAdvertiser = remember { BleAdvertiser(adapter) }
 
+                // Handle back button navigation
+                BackHandler(enabled = currentScreen != MainScreen.CONTACTS) {
+                    currentScreen = MainScreen.CONTACTS
+                }
+
                 // notification deep link
                 LaunchedEffect(Unit) {
                     val contactId = intent?.getStringExtra("contactId")
@@ -235,7 +240,6 @@ class MainActivity : ComponentActivity() {
                     }
 
                     MainScreen.NEIGHBORS -> {
-                        BackHandler { currentScreen = MainScreen.CONTACTS }
                         NeighborListScreen()
                     }
 
