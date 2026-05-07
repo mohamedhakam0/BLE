@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Share
@@ -85,11 +84,6 @@ fun LogViewerScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Logs") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
                 actions = {
                     IconButton(onClick = { AppLogger.clear(); refreshTick++ }) {
                         Icon(Icons.Filled.Clear, contentDescription = "Clear")
@@ -97,7 +91,10 @@ fun LogViewerScreen(
                     IconButton(onClick = { shareLogsAsFile() }) {
                         Icon(Icons.Filled.Share, contentDescription = "Share")
                     }
-                }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background
+                )
             )
         }
     ) { padding ->
@@ -105,7 +102,7 @@ fun LogViewerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(12.dp),
+                .padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.Top
         ) {
             OutlinedTextField(

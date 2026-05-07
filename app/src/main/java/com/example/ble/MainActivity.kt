@@ -1,16 +1,8 @@
-/**
- * Main Compose entry point for Peer Reach.
- *
- * Responsibilities in this file include startup permission requests, mesh service startup,
- * screen navigation (contacts/chat/QR/logs), and contacts list row actions
- * (rename/delete chat/delete contact).
- */
 package com.example.ble
 
 import android.Manifest
 import android.bluetooth.BluetoothManager
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -19,44 +11,40 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.CubicBezierEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.BugReport
-import androidx.compose.material.icons.filled.NetworkWifi
-import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material3.*
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.ble.ui.QrGenerateScreen
+import com.example.ble.ui.KeysScreen
 import com.example.ble.ui.LogViewerScreen
-import com.example.ble.ui.QrScanScreen
 import com.example.ble.ui.theme.BLETheme
+import com.example.ble.ui.theme.isDarkTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
@@ -64,20 +52,10 @@ import kotlinx.coroutines.launch
 import java.util.Calendar
 import java.util.Locale
 
-private val EaseInOutSine = CubicBezierEasing(0.37f, 0f, 0.63f, 1f)
-
-/** Top-level destinations rendered by MainActivity. */
-enum class MainScreen {
-    CONTACTS,
-    CHAT,
-    QR_GENERATE,
-    QR_SCAN,
-    LOGS,
-    NEIGHBORS,
-    STRESS_TEST
+enum class Tab {
+    LOGS, STRESS, MESSAGES, NETWORK, KEYS
 }
 
-/** Activity hosting all main Peer Reach composable screens. */
 class MainActivity : ComponentActivity() {
 
     companion object {
@@ -91,16 +69,11 @@ class MainActivity : ComponentActivity() {
     private var localSenderIdHex: String = "00000000"
     private var localPublicKey: ByteArray = byteArrayOf()
 
-    /**
-     * Initializes identity/repositories, requests runtime permissions, starts mesh service,
-     * and renders the Compose navigation shell.
-     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         requestRuntimePermissionsIfNeeded()
-
         ForegroundMeshService.start(applicationContext)
 
         nodeIdentity = NodeIdentity(this)
@@ -120,152 +93,146 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             BLETheme {
-                var currentScreen by remember { mutableStateOf(MainScreen.CONTACTS) }
+                SideEffect {
+                    @Suppress("DEPRECATION")
+                    window.statusBarColor = if (isDarkTheme) 0xFF0A0C10.toInt() else 0xFFF4F6FB.toInt()
+                    WindowCompat.getInsetsController(window, window.decorView)
+                        .isAppearanceLightStatusBars = !isDarkTheme
+                }
+
+                var selectedTab by remember { mutableStateOf(Tab.MESSAGES) }
+                var inChat by remember { mutableStateOf(false) }
                 var activeContact by remember { mutableStateOf<ContactLastMessageRow?>(null) }
-                val contactsFlow = remember { contactRepository.observeContactsWithLastMessage() }
-                val contacts by contactsFlow.collectAsState(initial = emptyList())
 
                 val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
                 val adapter = bluetoothManager.adapter
                 val bleAdvertiser = remember { BleAdvertiser(adapter) }
 
-                // Handle back button navigation
-                BackHandler(enabled = currentScreen != MainScreen.CONTACTS) {
-                    currentScreen = MainScreen.CONTACTS
+                BackHandler(enabled = inChat) {
+                    inChat = false
                 }
 
-                // notification deep link
+                // Notification deep link
                 LaunchedEffect(Unit) {
                     val contactId = intent?.getStringExtra("contactId")
                     if (contactId != null) {
-                        // active contact resolution via flow snapshot
                         contactRepository.observeContactsWithLastMessage().collectLatest { rows ->
                             val found = rows.firstOrNull { it.senderId.equals(contactId, ignoreCase = true) }
                             if (found != null) {
-                                // Clear existing notification + buffer for this conversation.
                                 NotificationHelper.clearConversation(applicationContext, found.senderId)
                                 activeContact = found
-                                currentScreen = MainScreen.CHAT
+                                inChat = true
+                                selectedTab = Tab.MESSAGES
                             }
                         }
                     }
                 }
 
-                when (currentScreen) {
-                    MainScreen.CONTACTS -> {
-                        ContactsHomeScreen(
-                            contactRepository = contactRepository,
-                            myNickname = nickname,
-                            mySenderIdHex = localSenderIdHex,
-                            myPublicKeyB64 = publicKeyB64,
-                            onOpenChat = {
-                                activeContact = it
-                                currentScreen = MainScreen.CHAT
-                                // Clear existing notification + buffer when entering chat.
-                                NotificationHelper.clearConversation(applicationContext, it.senderId)
-                            },
-                            onShowQr = { currentScreen = MainScreen.QR_GENERATE },
-                            onScanQr = { currentScreen = MainScreen.QR_SCAN },
-                            onShowLogs = { currentScreen = MainScreen.LOGS },
-                            onShowNeighbors = { currentScreen = MainScreen.NEIGHBORS },
-                            onShowStress = { currentScreen = MainScreen.STRESS_TEST }
-                        )
-                    }
-
-                    MainScreen.CHAT -> {
-                        val contact = activeContact
-                        if (contact == null) {
-                            currentScreen = MainScreen.CONTACTS
-                        } else {
-                            // Explicit permission gate: avoids SecurityException on Android 12+.
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                val hasAdvertise = ContextCompat.checkSelfPermission(
-                                    this@MainActivity,
-                                    Manifest.permission.BLUETOOTH_ADVERTISE
-                                ) == PackageManager.PERMISSION_GRANTED
-                                val hasConnect = ContextCompat.checkSelfPermission(
-                                    this@MainActivity,
-                                    Manifest.permission.BLUETOOTH_CONNECT
-                                ) == PackageManager.PERMISSION_GRANTED
-                                if (!hasAdvertise || !hasConnect) {
-                                    AppLogger.w("BLE", "Missing BLE permissions for chat (advertise=$hasAdvertise connect=$hasConnect)")
-                                    currentScreen = MainScreen.CONTACTS
-                                    return@BLETheme
-                                }
-                            }
-
-                            val vm = remember(contact.senderId) {
-                                ChatViewModel(
-                                    app = application as android.app.Application,
-                                    nodeIdentity = nodeIdentity,
-                                    advertiser = bleAdvertiser,
-                                    messageRepository = messageRepository,
-                                    contactId = contact.senderId,
-                                    contactSenderIdHex = contact.senderId
-                                )
-                            }
-
-                            com.example.ble.ChatScreen(
-                                contactName = contact.nickname,
-                                receiverIdHex = contact.senderId,
-                                viewModel = vm,
-                                onBack = { currentScreen = MainScreen.CONTACTS }
-                            )
+                if (inChat && activeContact != null) {
+                    val contact = activeContact!!
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        val hasAdvertise = ContextCompat.checkSelfPermission(
+                            this@MainActivity, Manifest.permission.BLUETOOTH_ADVERTISE
+                        ) == PackageManager.PERMISSION_GRANTED
+                        val hasConnect = ContextCompat.checkSelfPermission(
+                            this@MainActivity, Manifest.permission.BLUETOOTH_CONNECT
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (!hasAdvertise || !hasConnect) {
+                            AppLogger.w("BLE", "Missing BLE permissions for chat")
+                            inChat = false
                         }
                     }
 
-                    MainScreen.QR_GENERATE -> {
-                        QrGenerateScreen(
-                            nickname = nickname,
-                            senderIdHex = localSenderIdHex,
-                            publicKeyB64 = publicKeyB64,
-                            onBack = { currentScreen = MainScreen.CONTACTS }
-                        )
-                    }
-
-                    MainScreen.QR_SCAN -> {
-                        QrScanScreen(
-                            contactRepository = contactRepository,
-                            onContactAdded = {
-                                currentScreen = MainScreen.CONTACTS
-                            },
-                            onBack = { currentScreen = MainScreen.CONTACTS }
-                        )
-                    }
-
-                    MainScreen.LOGS -> {
-                        LogViewerScreen(
-                            onBack = { currentScreen = MainScreen.CONTACTS }
-                        )
-                    }
-
-                    MainScreen.NEIGHBORS -> {
-                        NeighborListScreen()
-                    }
-
-                    MainScreen.STRESS_TEST -> {
-                        val stressVm: com.example.ble.debug.StressTestViewModel =
-                            viewModel(
-                                key = "stress_vm",
-                                factory = com.example.ble.debug.StressTestViewModel.Factory(
-                                    application = application as android.app.Application,
-                                    nodeIdentity = nodeIdentity,
-                                    advertiser = bleAdvertiser,
-                                    messageRepository = messageRepository,
-                                    contactRepository = contactRepository
-                                )
+                    if (inChat) {
+                        val vm = remember(contact.senderId) {
+                            ChatViewModel(
+                                app = application as android.app.Application,
+                                nodeIdentity = nodeIdentity,
+                                advertiser = bleAdvertiser,
+                                messageRepository = messageRepository,
+                                contactId = contact.senderId,
+                                contactSenderIdHex = contact.senderId
                             )
-                        com.example.ble.debug.StressTestScreen(
-                            viewModel = stressVm,
-                            onBack = { currentScreen = MainScreen.CONTACTS }
+                        }
+                        ChatScreen(
+                            contactName = contact.nickname,
+                            receiverIdHex = contact.senderId,
+                            viewModel = vm,
+                            onBack = { inChat = false }
                         )
+                    }
+                } else {
+                    val showTopBar = selectedTab in listOf(Tab.MESSAGES, Tab.NETWORK, Tab.KEYS)
+
+                    Scaffold(
+                        containerColor = MaterialTheme.colorScheme.background,
+                        topBar = {
+                            if (showTopBar) PeerReachTopBar()
+                        },
+                        bottomBar = {
+                            PeerReachBottomBar(
+                                selectedTab = selectedTab,
+                                onTabSelected = { selectedTab = it }
+                            )
+                        }
+                    ) { padding ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(padding)
+                                .background(MaterialTheme.colorScheme.background)
+                        ) {
+                            when (selectedTab) {
+                                Tab.LOGS -> {
+                                    LogViewerScreen(onBack = { selectedTab = Tab.MESSAGES })
+                                }
+                                Tab.STRESS -> {
+                                    val stressVm: com.example.ble.debug.StressTestViewModel =
+                                        viewModel(
+                                            key = "stress_vm",
+                                            factory = com.example.ble.debug.StressTestViewModel.Factory(
+                                                application = application as android.app.Application,
+                                                nodeIdentity = nodeIdentity,
+                                                advertiser = bleAdvertiser,
+                                                messageRepository = messageRepository,
+                                                contactRepository = contactRepository
+                                            )
+                                        )
+                                    com.example.ble.debug.StressTestScreen(
+                                        viewModel = stressVm,
+                                        onBack = { selectedTab = Tab.MESSAGES }
+                                    )
+                                }
+                                Tab.MESSAGES -> {
+                                    MessagesScreen(
+                                        contactRepository = contactRepository,
+                                        onOpenChat = {
+                                            activeContact = it
+                                            inChat = true
+                                            NotificationHelper.clearConversation(applicationContext, it.senderId)
+                                        },
+                                        onGoToKeys = { selectedTab = Tab.KEYS }
+                                    )
+                                }
+                                Tab.NETWORK -> {
+                                    NeighborListScreen(contactRepository = contactRepository)
+                                }
+                                Tab.KEYS -> {
+                                    KeysScreen(
+                                        nickname = nickname,
+                                        senderIdHex = localSenderIdHex,
+                                        publicKeyB64 = publicKeyB64,
+                                        contactRepository = contactRepository
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    /** Requests BLE, camera, and notification runtime permissions where required by API level. */
     private fun requestRuntimePermissionsIfNeeded() {
         val needed = mutableListOf<String>()
 
@@ -293,13 +260,10 @@ class MainActivity : ComponentActivity() {
             ActivityCompat.requestPermissions(this, needed.toTypedArray(), REQ_PERMS)
         }
 
-        // Android 13+ requires runtime notification permission.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                    REQ_NOTIF
+                    this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF
                 )
             }
         }
@@ -307,31 +271,154 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Foreground state is now determined inside ForegroundMeshService via ActivityManager.
     }
 
     override fun onPause() {
-        // Foreground state is now determined inside ForegroundMeshService via ActivityManager.
         super.onPause()
     }
 }
 
-/**
- * One conversation row in the contacts list with overflow actions.
- */
+@Composable
+private fun PeerReachTopBar() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding()
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column {
+            Text(
+                "Peer Reach",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Text(
+                "mesh · ble + lora · e2e",
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f)
+            )
+        }
+        Surface(
+            onClick = { isDarkTheme = !isDarkTheme },
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+        ) {
+            Text(
+                text = if (isDarkTheme) "☀  Light" else "◑  Dark",
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun PeerReachBottomBar(
+    selectedTab: Tab,
+    onTabSelected: (Tab) -> Unit
+) {
+    NavigationBar(
+        containerColor = MaterialTheme.colorScheme.background,
+        tonalElevation = 0.dp,
+        modifier = Modifier
+            .border(width = 1.dp, color = MaterialTheme.colorScheme.outline, shape = RectangleShape)
+            .navigationBarsPadding()
+    ) {
+        data class NavItem(val tab: Tab, val icon: ImageVector, val label: String)
+        val items = listOf(
+            NavItem(Tab.LOGS, Icons.AutoMirrored.Filled.List, "Logs"),
+            NavItem(Tab.STRESS, Icons.Filled.BugReport, "Stress"),
+            NavItem(Tab.MESSAGES, Icons.Filled.ChatBubbleOutline, "Chats"),
+            NavItem(Tab.NETWORK, Icons.Filled.Sensors, "Network"),
+            NavItem(Tab.KEYS, Icons.Filled.QrCode2, "Keys"),
+        )
+        items.forEach { item ->
+            NavigationBarItem(
+                selected = selectedTab == item.tab,
+                onClick = { onTabSelected(item.tab) },
+                icon = { Icon(item.icon, contentDescription = item.label) },
+                label = { Text(item.label, style = MaterialTheme.typography.labelSmall) },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = MaterialTheme.colorScheme.primary,
+                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                    unselectedIconColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.35f),
+                    unselectedTextColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.35f),
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun MessagesScreen(
+    contactRepository: ContactRepository,
+    onOpenChat: (ContactLastMessageRow) -> Unit,
+    onGoToKeys: () -> Unit = {}
+) {
+    val contactsFlow = remember { contactRepository.observeContactsWithLastMessage() }
+    val contacts by contactsFlow.collectAsState(initial = emptyList())
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "Chats",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            IconButton(onClick = onGoToKeys) {
+                Icon(
+                    Icons.Filled.QrCode2,
+                    contentDescription = "Keys",
+                    tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+
+        if (contacts.isEmpty()) {
+            Text(
+                "No contacts yet. Go to Keys tab to scan a friend's QR.",
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f)
+            )
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(contacts) { c ->
+                    ContactConversationRow(
+                        contact = c,
+                        onClick = { onOpenChat(c) },
+                        contactRepository = contactRepository
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun ContactConversationRow(
     contact: ContactLastMessageRow,
     onClick: () -> Unit,
     contactRepository: ContactRepository
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-
     var menuExpanded by remember { mutableStateOf(false) }
-
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameInput by remember { mutableStateOf(contact.nickname) }
-
     var showDeleteChatDialog by remember { mutableStateOf(false) }
     var showDeleteContactDialog by remember { mutableStateOf(false) }
 
@@ -395,16 +482,12 @@ private fun ContactConversationRow(
             title = { Text("Delete Contact") },
             text = { Text("If you delete this contact you will not be able to message them again until you scan their QR code.") },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        CoroutineScope(Dispatchers.IO).launch {
-                            contactRepository.deleteContactAndChat(contact.senderId)
-                        }
-                        showDeleteContactDialog = false
+                TextButton(onClick = {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        contactRepository.deleteContactAndChat(contact.senderId)
                     }
-                ) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
-                }
+                    showDeleteContactDialog = false
+                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteContactDialog = false }) { Text("Cancel") }
@@ -412,223 +495,76 @@ private fun ContactConversationRow(
         )
     }
 
-    Card(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(onClick = onClick)
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(contact.nickname, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                contact.nickname,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                contact.lastText ?: "No messages yet",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+            )
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (time.isNotBlank()) {
                 Text(
-                    contact.lastText ?: "No messages yet",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.Gray,
-                    maxLines = 1
+                    time,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
                 )
+                Spacer(Modifier.width(6.dp))
             }
 
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                if (time.isNotBlank()) {
-                    Text(time, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                    Spacer(Modifier.width(6.dp))
+            Box {
+                IconButton(onClick = {
+                    renameInput = contact.nickname
+                    menuExpanded = true
+                }) {
+                    Icon(
+                        Icons.Filled.MoreVert,
+                        contentDescription = "Menu",
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
                 }
-
-                Box {
-                    IconButton(
-                        onClick = {
-                            // Ensure renameInput is always current when opening.
-                            renameInput = contact.nickname
-                            menuExpanded = true
-                        }
-                    ) {
-                        Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
-                    }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Rename") },
-                            onClick = {
-                                menuExpanded = false
-                                showRenameDialog = true
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Delete Chat") },
-                            onClick = {
-                                menuExpanded = false
-                                showDeleteChatDialog = true
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Delete Contact") },
-                            onClick = {
-                                menuExpanded = false
-                                showDeleteContactDialog = true
-                            }
-                        )
-                    }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Rename") },
+                        onClick = { menuExpanded = false; showRenameDialog = true }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete Chat") },
+                        onClick = { menuExpanded = false; showDeleteChatDialog = true }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete Contact") },
+                        onClick = { menuExpanded = false; showDeleteContactDialog = true }
+                    )
                 }
             }
         }
     }
 }
 
-/**
- * Home screen with quick QR actions and chat/contact list.
- */
-@Composable
-private fun ContactsHomeScreen(
-    contactRepository: ContactRepository,
-    myNickname: String,
-    mySenderIdHex: String,
-    myPublicKeyB64: String,
-    onOpenChat: (ContactLastMessageRow) -> Unit,
-    onShowQr: () -> Unit,
-    onScanQr: () -> Unit,
-    onShowLogs: () -> Unit,
-    onShowNeighbors: () -> Unit,
-    onShowStress: () -> Unit
-) {
-    val contactsFlow = remember { contactRepository.observeContactsWithLastMessage() }
-    val contacts by contactsFlow.collectAsState(initial = emptyList())
-    val neighbors = NeighborTable.neighbors.collectAsStateWithLifecycle().value
-    val directCount = neighbors.count { it.hopCount == 0 }
-
-    val pulseScale = remember { Animatable(1f) }
-    val rippleProgress = remember { Animatable(0f) }
-    var previousDirectCount by remember { mutableStateOf(directCount) }
-
-    val infiniteTransition = rememberInfiniteTransition(label = "network_breath")
-    val breathingScale by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 1.06f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2000, easing = EaseInOutSine),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "network_breath_scale"
-    )
-
-    val effectiveScale = pulseScale.value * if (directCount > 0) breathingScale else 1f
-
-    LaunchedEffect(directCount) {
-        if (directCount != previousDirectCount) {
-            pulseScale.snapTo(1f)
-            pulseScale.animateTo(1.35f, animationSpec = tween(180))
-            pulseScale.animateTo(1f, animationSpec = tween(170))
-
-            rippleProgress.snapTo(0f)
-            rippleProgress.animateTo(1f, animationSpec = tween(600))
-        }
-        previousDirectCount = directCount
-    }
-
-    Box(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
-        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(onClick = onShowQr, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Filled.QrCode2, contentDescription = "My QR")
-                    Spacer(Modifier.width(4.dp))
-                    Text("My QR")
-                }
-                Button(onClick = onScanQr, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Filled.CameraAlt, contentDescription = "Scan QR")
-                    Spacer(Modifier.width(4.dp))
-                    Text("Scan QR")
-                }
-
-                IconButton(onClick = onShowLogs) {
-                    Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Logs")
-                }
-
-                IconButton(onClick = onShowStress) {
-                    Icon(Icons.Filled.BugReport, contentDescription = "Stress Test")
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-            Text("Chats", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(8.dp))
-
-            if (contacts.isEmpty()) {
-                Text("No contacts yet. Scan a friend's QR.", color = Color.Gray)
-            } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(contacts) { c ->
-                        ContactConversationRow(
-                            contact = c,
-                            onClick = { onOpenChat(c) },
-                            contactRepository = contactRepository
-                        )
-                    }
-                }
-            }
-        }
-
-        NetworkFab(
-            directCount = directCount,
-            effectiveScale = effectiveScale,
-            rippleProgress = rippleProgress.value,
-            onClick = onShowNeighbors,
-            modifier = Modifier.align(androidx.compose.ui.Alignment.BottomEnd).padding(24.dp)
-        )
-    }
-}
-
-@Composable
-private fun NetworkFab(
-    directCount: Int,
-    effectiveScale: Float,
-    rippleProgress: Float,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    maxRippleRadius: Dp = 48.dp
-) {
-    val rippleColor = MaterialTheme.colorScheme.primary
-
-    Box(modifier = modifier.size(64.dp), contentAlignment = androidx.compose.ui.Alignment.Center) {
-        if (rippleProgress in 0f..0.999f) {
-            val alpha = 0.5f * (1f - rippleProgress)
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                drawCircle(
-                    color = rippleColor.copy(alpha = alpha),
-                    radius = maxRippleRadius.toPx() * rippleProgress
-                )
-            }
-        }
-
-        FloatingActionButton(
-            onClick = onClick,
-            modifier = Modifier.graphicsLayer {
-                scaleX = effectiveScale
-                scaleY = effectiveScale
-            }
-        ) {
-            BadgedBox(
-                badge = {
-                    if (directCount > 0) {
-                        Badge { Text(directCount.toString()) }
-                    }
-                }
-            ) {
-                Icon(Icons.Filled.NetworkWifi, contentDescription = "Neighbors")
-            }
-        }
-    }
-}
-
-/** Formats message timestamps for contacts list preview rows. */
 private fun formatTime(timestampMs: Long): String {
     val cal = Calendar.getInstance().apply { timeInMillis = timestampMs }
     val h = cal.get(Calendar.HOUR_OF_DAY)
@@ -636,5 +572,4 @@ private fun formatTime(timestampMs: Long): String {
     return String.format(Locale.getDefault(), "%02d:%02d", h, m)
 }
 
-/** Encodes raw bytes as lowercase hex without separators. */
 private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
