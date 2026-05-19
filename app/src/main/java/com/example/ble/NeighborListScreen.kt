@@ -36,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.ble.ui.ContactAvatarCircle
 import com.example.ble.ui.GradientAvatarCircle
 import com.example.ble.ui.theme.Accent
 import com.example.ble.ui.theme.AccentGlow
@@ -324,7 +325,11 @@ private fun NeighborRow(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
             if (contactName != null && gradientSeedHex.length >= 6) {
-                GradientAvatarCircle(gradientSeedHex = gradientSeedHex, size = 32.dp)
+                ContactAvatarCircle(
+                    senderIdHex = entry.nodeId.lowercase(),
+                    gradientSeedHex = gradientSeedHex,
+                    size = 32.dp
+                )
             } else {
                 Box(
                     modifier = Modifier

@@ -1,5 +1,8 @@
 package com.example.ble
 
+import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -17,9 +20,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -27,13 +30,18 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -47,6 +55,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,15 +64,18 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import com.example.ble.ui.GradientAvatarCircle
+import com.example.ble.ui.ContactAvatarCircle
+import com.example.ble.ui.ContactInfoSheet
 import com.example.ble.ui.theme.NodeGreen
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -73,21 +85,35 @@ fun ChatScreen(
     contactName: String,
     receiverIdHex: String,
     gradientSeedHex: String = "",
+    publicKeyB64: String = "",
     viewModel: ChatViewModel,
     onBack: () -> Unit
 ) {
     val messages by viewModel.messages.collectAsState(initial = emptyList())
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
 
     var inputFocused by remember { mutableStateOf(false) }
-
     var tapCount by remember { mutableIntStateOf(0) }
     var lastTapMs by remember { mutableLongStateOf(0L) }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var menuExpanded by remember { mutableStateOf(false) }
+    var showInfoSheet by remember { mutableStateOf(false) }
+
+    val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch(Dispatchers.IO) {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                val bmp = BitmapFactory.decodeStream(stream)
+                if (bmp != null) AvatarManager.save(context, receiverIdHex, bmp)
+            }
+        }
+    }
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
@@ -98,19 +124,27 @@ fun ChatScreen(
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
-            title = { Text("Delete chat history?") },
+            title = { Text("Clear chat history?") },
             text = { Text("This cannot be undone.") },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        showDeleteDialog = false
-                        viewModel.deleteHistory(receiverIdHex)
-                    }
-                ) { Text("Confirm") }
+                TextButton(onClick = {
+                    showDeleteDialog = false
+                    viewModel.deleteHistory(receiverIdHex)
+                }) { Text("Clear") }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
             }
+        )
+    }
+
+    if (showInfoSheet) {
+        ContactInfoSheet(
+            contactName = contactName,
+            senderIdHex = receiverIdHex,
+            gradientSeedHex = gradientSeedHex,
+            publicKeyB64 = publicKeyB64,
+            onDismiss = { showInfoSheet = false }
         )
     }
 
@@ -140,13 +174,14 @@ fun ChatScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 TextButton(onClick = onBack) {
-                    Text(
-                        "Back",
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    Text("Back", color = MaterialTheme.colorScheme.primary)
                 }
                 if (gradientSeedHex.length >= 6) {
-                    GradientAvatarCircle(gradientSeedHex = gradientSeedHex, size = 36.dp)
+                    ContactAvatarCircle(
+                        senderIdHex = receiverIdHex,
+                        gradientSeedHex = gradientSeedHex,
+                        size = 36.dp
+                    )
                     Spacer(Modifier.width(8.dp))
                 } else {
                     Spacer(Modifier.width(8.dp))
@@ -156,17 +191,49 @@ fun ChatScreen(
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.clickable {
-                        val now = System.currentTimeMillis()
-                        if (now - lastTapMs > 1000L) tapCount = 0
-                        lastTapMs = now
-                        tapCount += 1
-                        if (tapCount >= 3) {
-                            tapCount = 0
-                            showDeleteDialog = true
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable {
+                            val now = System.currentTimeMillis()
+                            if (now - lastTapMs > 1000L) tapCount = 0
+                            lastTapMs = now
+                            tapCount += 1
+                            if (tapCount >= 3) {
+                                tapCount = 0
+                                showDeleteDialog = true
+                            }
                         }
-                    }
                 )
+                Box {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(
+                            Icons.Default.MoreVert,
+                            contentDescription = "More",
+                            tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Change avatar") },
+                            onClick = { menuExpanded = false; pickImage.launch("image/*") }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Reset avatar") },
+                            onClick = { menuExpanded = false; AvatarManager.delete(context, receiverIdHex) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Clear chat") },
+                            onClick = { menuExpanded = false; showDeleteDialog = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Contact info") },
+                            onClick = { menuExpanded = false; showInfoSheet = true }
+                        )
+                    }
+                }
             }
             Divider(color = MaterialTheme.colorScheme.outline, thickness = 1.dp)
         }
@@ -191,10 +258,7 @@ fun ChatScreen(
                 ) { _, msg ->
                     val animateOnFirstShow = initialSnapshotDone && !seenMsgIds.contains(msg.msgIdHex)
                     MessageBubble(message = msg, animateOnFirstShow = animateOnFirstShow)
-
-                    LaunchedEffect(msg.msgIdHex) {
-                        seenMsgIds.add(msg.msgIdHex)
-                    }
+                    LaunchedEffect(msg.msgIdHex) { seenMsgIds.add(msg.msgIdHex) }
                 }
             }
         }
@@ -270,14 +334,8 @@ private fun MessageBubble(
         if (animateOnFirstShow) {
             alphaAnim.snapTo(0f)
             offsetAnim.snapTo(-12f)
-            alphaAnim.animateTo(
-                1f,
-                animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing)
-            )
-            offsetAnim.animateTo(
-                0f,
-                animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing)
-            )
+            alphaAnim.animateTo(1f, animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing))
+            offsetAnim.animateTo(0f, animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing))
         } else {
             alphaAnim.snapTo(1f)
             offsetAnim.snapTo(0f)
@@ -313,15 +371,8 @@ private fun MessageBubble(
                         )
                     } else {
                         Modifier
-                            .background(
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                shape = receivedShape
-                            )
-                            .border(
-                                1.dp,
-                                MaterialTheme.colorScheme.outline,
-                                receivedShape
-                            )
+                            .background(color = MaterialTheme.colorScheme.surfaceVariant, shape = receivedShape)
+                            .border(1.dp, MaterialTheme.colorScheme.outline, receivedShape)
                     }
                 )
                 .padding(10.dp)
@@ -357,7 +408,6 @@ private fun MessageBubble(
                                     modifier = Modifier.size(16.dp)
                                 )
                             }
-
                             DeliveryStatus.DELIVERED -> {
                                 Box(
                                     Modifier

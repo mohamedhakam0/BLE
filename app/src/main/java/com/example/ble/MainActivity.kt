@@ -41,11 +41,17 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.example.ble.ui.ContactAvatarCircle
 import com.example.ble.ui.KeysScreen
 import com.example.ble.ui.LogViewerScreen
 import com.example.ble.ui.TrustVerificationScreen
 import com.example.ble.ui.theme.BLETheme
 import com.example.ble.ui.theme.isDarkTheme
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
@@ -213,6 +219,7 @@ class MainActivity : ComponentActivity() {
                             contactName = contact.nickname,
                             receiverIdHex = contact.senderId,
                             gradientSeedHex = contact.gradientSeed,
+                            publicKeyB64 = contact.publicKey,
                             viewModel = vm,
                             onBack = { inChat = false }
                         )
@@ -481,6 +488,19 @@ private fun ContactConversationRow(
     onClick: () -> Unit,
     contactRepository: ContactRepository
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch(Dispatchers.IO) {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                val bmp = BitmapFactory.decodeStream(stream)
+                if (bmp != null) AvatarManager.save(context, contact.senderId, bmp)
+            }
+        }
+    }
+
     var menuExpanded by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameInput by remember { mutableStateOf(contact.nickname) }
@@ -571,7 +591,11 @@ private fun ContactConversationRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (contact.gradientSeed.length >= 6) {
-            com.example.ble.ui.GradientAvatarCircle(gradientSeedHex = contact.gradientSeed, size = 44.dp)
+            ContactAvatarCircle(
+                senderIdHex = contact.senderId,
+                gradientSeedHex = contact.gradientSeed,
+                size = 44.dp
+            )
             Spacer(Modifier.width(12.dp))
         }
         Column(modifier = Modifier.weight(1f)) {
@@ -619,6 +643,14 @@ private fun ContactConversationRow(
                     DropdownMenuItem(
                         text = { Text("Rename") },
                         onClick = { menuExpanded = false; showRenameDialog = true }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Change avatar") },
+                        onClick = { menuExpanded = false; pickImage.launch("image/*") }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Reset avatar") },
+                        onClick = { menuExpanded = false; AvatarManager.delete(context, contact.senderId) }
                     )
                     DropdownMenuItem(
                         text = { Text("Delete Chat") },

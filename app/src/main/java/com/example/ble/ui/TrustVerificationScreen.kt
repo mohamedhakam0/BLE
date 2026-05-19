@@ -1,6 +1,7 @@
 package com.example.ble.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -18,11 +19,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.example.ble.AvatarManager
 import com.example.ble.ui.theme.NodeGreen
 import java.security.MessageDigest
 
@@ -71,6 +76,27 @@ fun GradientAvatarCircle(
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         )
+    }
+}
+
+@Composable
+fun ContactAvatarCircle(
+    senderIdHex: String,
+    gradientSeedHex: String,
+    size: Dp = 44.dp
+) {
+    val context = LocalContext.current
+    val counter = AvatarManager.changeCounter
+    val bitmap = remember(senderIdHex, counter) { AvatarManager.load(context, senderIdHex) }
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap.asImageBitmap(),
+            contentDescription = null,
+            modifier = Modifier.size(size).clip(CircleShape),
+            contentScale = ContentScale.Crop
+        )
+    } else {
+        GradientAvatarCircle(gradientSeedHex = gradientSeedHex, size = size)
     }
 }
 
