@@ -273,9 +273,10 @@ private fun MyQrTab(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             row.forEach { block ->
+                                val chipColor = remember(block) { hexToFingerprintColor(block) }
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    color = chipColor,
                                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                                     modifier = Modifier.weight(1f)
                                 ) {
@@ -284,7 +285,7 @@ private fun MyQrTab(
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 5.dp),
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(0.7f),
+                                        color = Color.White.copy(alpha = 0.85f),
                                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
                                     )
                                 }
@@ -292,6 +293,13 @@ private fun MyQrTab(
                         }
                     }
                 }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Your peer can verify these colors and codes on their screen after scanning.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(0.4f),
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
 

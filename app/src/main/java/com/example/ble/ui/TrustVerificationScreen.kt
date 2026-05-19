@@ -74,7 +74,7 @@ fun GradientAvatarCircle(
     }
 }
 
-private fun hexToFingerprintColor(hex: String): Color = try {
+internal fun hexToFingerprintColor(hex: String): Color = try {
     val value = hex.toLong(16).toFloat()
     val hue = 220f + (value / 0xFFFF.toFloat()) * 80f
     Color.hsl(hue, 0.65f, 0.45f)
