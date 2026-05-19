@@ -184,7 +184,9 @@ class ChatViewModel(
     private val contactPublicKeyB64: String = ""
 ) : AndroidViewModel(app) {
 
-    // Derived once per session: first 16 bytes = AES key, next 12 bytes = nonce base
+    // Derived once per session: first 16 bytes = AES key, next 12 bytes = nonce base.
+    // Key derivation uses the two raw public keys in lexicographic order so both peers
+    // compute identical HKDF output regardless of who is sender or receiver.
     private val sessionCrypto: Pair<ByteArray, ByteArray>? by lazy {
         if (contactPublicKeyB64.isBlank()) return@lazy null
         try {
@@ -192,7 +194,11 @@ class ChatViewModel(
             val peerPubKey = Base64.decode(contactPublicKeyB64, Base64.NO_WRAP)
             if (peerPubKey.size != 32) return@lazy null
             val shared = CryptoManager.computeSharedSecret(identity.privateKey, peerPubKey)
-            val full = CryptoManager.deriveSessionKey(shared, identity.senderId, peerPubKey.copyOfRange(0, 4))
+            val myKey4   = identity.publicKey.copyOfRange(0, 4)
+            val peerKey4 = peerPubKey.copyOfRange(0, 4)
+            val (lo, hi) = if (myKey4.unsignedLexCompare(peerKey4) <= 0)
+                Pair(myKey4, peerKey4) else Pair(peerKey4, myKey4)
+            val full = CryptoManager.deriveSessionKey(shared, lo, hi)
             Pair(full.copyOfRange(0, 16), full.copyOfRange(16, 28))
         } catch (_: Exception) {
             null
@@ -399,6 +405,14 @@ class ChatViewModel(
 }
 
 // ── Private extension helpers ─────────────────────────────────────────────────
+
+private fun ByteArray.unsignedLexCompare(other: ByteArray): Int {
+    for (i in indices) {
+        val diff = (this[i].toInt() and 0xFF) - (other[i].toInt() and 0xFF)
+        if (diff != 0) return diff
+    }
+    return size - other.size
+}
 
 private fun ByteArray.toLongBE(): Long {
     require(size == 8)
