@@ -60,6 +60,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import com.example.ble.ui.GradientAvatarCircle
 import com.example.ble.ui.theme.NodeGreen
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -69,6 +70,7 @@ import java.util.Locale
 fun ChatScreen(
     contactName: String,
     receiverIdHex: String,
+    gradientSeedHex: String = "",
     viewModel: ChatViewModel,
     onBack: () -> Unit
 ) {
@@ -140,7 +142,12 @@ fun ChatScreen(
                         color = MaterialTheme.colorScheme.primary
                     )
                 }
-                Spacer(Modifier.width(8.dp))
+                if (gradientSeedHex.length >= 6) {
+                    GradientAvatarCircle(gradientSeedHex = gradientSeedHex, size = 36.dp)
+                    Spacer(Modifier.width(8.dp))
+                } else {
+                    Spacer(Modifier.width(8.dp))
+                }
                 Text(
                     text = contactName,
                     style = MaterialTheme.typography.titleSmall,

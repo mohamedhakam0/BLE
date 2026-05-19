@@ -18,7 +18,8 @@ data class Contact(
     @PrimaryKey val senderId: String,
     val nickname: String,
     val publicKey: String,
-    val dateAdded: Long
+    val dateAdded: Long,
+    val gradientSeed: String = ""
 )
 
 @Dao
@@ -39,7 +40,7 @@ interface ContactDao {
     suspend fun delete(senderId: String): Int
 }
 
-@Database(entities = [Contact::class, MessageEntity::class], version = 5, exportSchema = false)
+@Database(entities = [Contact::class, MessageEntity::class], version = 6, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun contactDao(): ContactDao
     abstract fun messageDao(): MessageDao
@@ -47,13 +48,19 @@ abstract class AppDatabase : RoomDatabase() {
     companion object {
         @Volatile private var INSTANCE: AppDatabase? = null
 
+        private val MIGRATION_5_6 = androidx.room.migration.Migration(5, 6) { database ->
+            database.execSQL("ALTER TABLE contacts ADD COLUMN gradientSeed TEXT NOT NULL DEFAULT ''")
+        }
+
         fun getInstance(context: Context): AppDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "peerreach.db"
-                ).build().also { INSTANCE = it }
+                )
+                    .addMigrations(MIGRATION_5_6)
+                    .build().also { INSTANCE = it }
             }
     }
 }

@@ -41,14 +41,17 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.ble.ui.ChatScreen
 import com.example.ble.ui.KeysScreen
 import com.example.ble.ui.LogViewerScreen
+import com.example.ble.ui.TrustVerificationScreen
 import com.example.ble.ui.theme.BLETheme
 import com.example.ble.ui.theme.isDarkTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Calendar
 import java.util.Locale
 
@@ -104,10 +107,21 @@ class MainActivity : ComponentActivity() {
                 var inChat by remember { mutableStateOf(false) }
                 var activeContact by remember { mutableStateOf<ContactLastMessageRow?>(null) }
 
+                data class PendingVerification(
+                    val peerName: String,
+                    val peerSenderId: String,
+                    val publicKeyBytes: ByteArray,
+                    val publicKeyB64: String
+                )
+                var pendingVerification by remember { mutableStateOf<PendingVerification?>(null) }
+
                 val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
                 val adapter = bluetoothManager.adapter
                 val bleAdvertiser = remember { BleAdvertiser(adapter) }
 
+                BackHandler(enabled = pendingVerification != null) {
+                    pendingVerification = null
+                }
                 BackHandler(enabled = inChat) {
                     inChat = false
                 }
@@ -128,7 +142,48 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                if (inChat && activeContact != null) {
+                val pending = pendingVerification
+                if (pending != null) {
+                    TrustVerificationScreen(
+                        peerName = pending.peerName,
+                        peerSenderId = pending.peerSenderId,
+                        publicKeyBytes = pending.publicKeyBytes,
+                        onTrust = { finalName ->
+                            val gradientSeed = if (pending.publicKeyBytes.size >= 3)
+                                "%02X%02X%02X".format(
+                                    pending.publicKeyBytes[0].toInt() and 0xFF,
+                                    pending.publicKeyBytes[1].toInt() and 0xFF,
+                                    pending.publicKeyBytes[2].toInt() and 0xFF
+                                )
+                            else ""
+                            val contact = Contact(
+                                senderId = pending.peerSenderId.trim().lowercase(),
+                                nickname = finalName,
+                                publicKey = pending.publicKeyB64,
+                                dateAdded = System.currentTimeMillis(),
+                                gradientSeed = gradientSeed
+                            )
+                            CoroutineScope(Dispatchers.IO).launch {
+                                contactRepository.upsertContact(contact)
+                                withContext(Dispatchers.Main) {
+                                    val row = ContactLastMessageRow(
+                                        senderId = contact.senderId,
+                                        nickname = contact.nickname,
+                                        publicKey = contact.publicKey,
+                                        dateAdded = contact.dateAdded,
+                                        gradientSeed = gradientSeed,
+                                        lastText = null,
+                                        lastTimestamp = null
+                                    )
+                                    activeContact = row
+                                    inChat = true
+                                    pendingVerification = null
+                                }
+                            }
+                        },
+                        onCancel = { pendingVerification = null }
+                    )
+                } else if (inChat && activeContact != null) {
                     val contact = activeContact!!
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         val hasAdvertise = ContextCompat.checkSelfPermission(
@@ -157,6 +212,7 @@ class MainActivity : ComponentActivity() {
                         ChatScreen(
                             contactName = contact.nickname,
                             receiverIdHex = contact.senderId,
+                            gradientSeedHex = contact.gradientSeed,
                             viewModel = vm,
                             onBack = { inChat = false }
                         )
@@ -222,7 +278,16 @@ class MainActivity : ComponentActivity() {
                                         nickname = nickname,
                                         senderIdHex = localSenderIdHex,
                                         publicKeyB64 = publicKeyB64,
-                                        contactRepository = contactRepository
+                                        contactRepository = contactRepository,
+                                        hasPendingVerification = pendingVerification != null,
+                                        onVerifyContact = { payload, publicKeyBytes ->
+                                            pendingVerification = PendingVerification(
+                                                peerName = payload.resolvedName().ifBlank { "Peer-${payload.senderId}" },
+                                                peerSenderId = payload.senderId,
+                                                publicKeyBytes = publicKeyBytes,
+                                                publicKeyB64 = payload.publicKey
+                                            )
+                                        }
                                     )
                                 }
                             }

@@ -2,6 +2,7 @@ package com.example.ble.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.util.Base64
 import android.widget.Toast
 import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
@@ -53,7 +54,9 @@ fun KeysScreen(
     nickname: String,
     senderIdHex: String,
     publicKeyB64: String,
-    contactRepository: ContactRepository
+    contactRepository: ContactRepository,
+    hasPendingVerification: Boolean = false,
+    onVerifyContact: (payload: QrIdentityPayload, publicKeyBytes: ByteArray) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     val nodeIdentity = remember { NodeIdentity(context.applicationContext) }
@@ -134,7 +137,10 @@ fun KeysScreen(
                 senderIdHex = senderIdHex,
                 publicKeyB64 = publicKeyB64
             )
-            1 -> ScanTab(contactRepository = contactRepository)
+            1 -> ScanTab(
+                hasPendingVerification = hasPendingVerification,
+                onVerifyContact = onVerifyContact
+            )
         }
     }
 }
@@ -362,14 +368,16 @@ private fun KeyInfoCard(
 }
 
 @Composable
-private fun ScanTab(contactRepository: ContactRepository) {
+private fun ScanTab(
+    hasPendingVerification: Boolean,
+    onVerifyContact: (payload: QrIdentityPayload, publicKeyBytes: ByteArray) -> Unit
+) {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var lastResult by remember { mutableStateOf<String?>(null) }
     var isProcessing by remember { mutableStateOf(false) }
-    var pendingPayload by remember { mutableStateOf<QrIdentityPayload?>(null) }
-    var nameInput by remember { mutableStateOf("") }
-    var showDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(hasPendingVerification) {
+        if (!hasPendingVerification) isProcessing = false
+    }
 
     val cameraGranted = remember {
         ActivityCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
@@ -379,7 +387,6 @@ private fun ScanTab(contactRepository: ContactRepository) {
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Camera preview
         Surface(
             shape = RoundedCornerShape(18.dp),
             color = MaterialTheme.colorScheme.surfaceVariant,
@@ -389,7 +396,7 @@ private fun ScanTab(contactRepository: ContactRepository) {
             if (cameraGranted) {
                 CameraScanPreview(
                     onQrDecoded = { json ->
-                        if (isProcessing || showDialog) return@CameraScanPreview
+                        if (isProcessing) return@CameraScanPreview
                         isProcessing = true
                         val payload = QrIdentityPayload.fromJson(json)
                         if (payload == null) {
@@ -397,10 +404,14 @@ private fun ScanTab(contactRepository: ContactRepository) {
                             isProcessing = false
                             return@CameraScanPreview
                         }
-                        pendingPayload = payload
-                        val suggested = payload.resolvedName().ifBlank { "Peer-${payload.senderId}" }
-                        nameInput = suggested
-                        showDialog = true
+                        val publicKeyBytes = try {
+                            Base64.decode(payload.publicKey, Base64.NO_WRAP)
+                        } catch (_: Exception) {
+                            Toast.makeText(context, "Invalid public key in QR", Toast.LENGTH_SHORT).show()
+                            isProcessing = false
+                            return@CameraScanPreview
+                        }
+                        onVerifyContact(payload, publicKeyBytes)
                     }
                 )
             } else {
@@ -420,71 +431,6 @@ private fun ScanTab(contactRepository: ContactRepository) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurface.copy(0.5f)
         )
-
-        if (lastResult != null) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Added: $lastResult",
-                color = MaterialTheme.colorScheme.primary,
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.Medium
-            )
-        }
-    }
-
-    if (showDialog && pendingPayload != null) {
-        val payload = pendingPayload!!
-        AlertDialog(
-            onDismissRequest = {
-                showDialog = false
-                pendingPayload = null
-                isProcessing = false
-            },
-            title = { Text("Add Contact") },
-            text = {
-                Column {
-                    Text("Enter a name for this contact")
-                    Spacer(Modifier.height(8.dp))
-                    TextField(
-                        value = nameInput,
-                        onValueChange = { nameInput = it.take(50) },
-                        singleLine = true,
-                        placeholder = { Text("e.g., Mohamed, Omar, Mom") }
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val cleaned = nameInput.trim()
-                    if (cleaned.isEmpty()) {
-                        Toast.makeText(context, "Name cannot be empty", Toast.LENGTH_SHORT).show()
-                        return@TextButton
-                    }
-                    CoroutineScope(Dispatchers.IO).launch {
-                        val contact = Contact(
-                            senderId = payload.senderId.trim().lowercase(),
-                            nickname = cleaned,
-                            publicKey = payload.publicKey,
-                            dateAdded = System.currentTimeMillis()
-                        )
-                        contactRepository.upsertContact(contact)
-                        withContext(Dispatchers.Main) {
-                            lastResult = cleaned
-                            showDialog = false
-                            pendingPayload = null
-                            isProcessing = false
-                        }
-                    }
-                }) { Text("Save") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    showDialog = false
-                    pendingPayload = null
-                    isProcessing = false
-                }) { Text("Cancel") }
-            }
-        )
     }
 }
 
@@ -496,6 +442,8 @@ private fun CameraScanPreview(
     val lifecycleOwner = LocalLifecycleOwner.current
     val scanner = remember { BarcodeScanning.getClient() }
     val executor = remember { Executors.newSingleThreadExecutor() }
+
+    val currentOnQrDecoded by rememberUpdatedState(onQrDecoded)
 
     val controller = remember {
         LifecycleCameraController(context).apply {
@@ -513,7 +461,7 @@ private fun CameraScanPreview(
                                     if (barcode.format == Barcode.FORMAT_QR_CODE) {
                                         val qrData = barcode.rawValue
                                         if (qrData != null) {
-                                            onQrDecoded(qrData)
+                                            currentOnQrDecoded(qrData)
                                             break
                                         }
                                     }

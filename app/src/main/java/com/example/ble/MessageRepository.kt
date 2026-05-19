@@ -54,6 +54,7 @@ data class ContactLastMessageRow(
     val nickname: String,
     val publicKey: String,
     val dateAdded: Long,
+    val gradientSeed: String = "",
     val lastText: String?,
     val lastTimestamp: Long?
 )
@@ -96,7 +97,7 @@ interface MessageDao {
     // WhatsApp-like conversation list query: one row per contact + latest message.
     @Query(
         """
-        SELECT c.senderId, c.nickname, c.publicKey, c.dateAdded,
+        SELECT c.senderId, c.nickname, c.publicKey, c.dateAdded, c.gradientSeed,
                m.text AS lastText, m.insertedAt AS lastTimestamp
         FROM contacts c
         LEFT JOIN messages m
