@@ -330,36 +330,6 @@ fun TrustVerificationScreen(
                     }
                 }
 
-                Spacer(Modifier.height(12.dp))
-
-                // Hex chip labels
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    fingerprint.chunked(4).forEach { row ->
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            row.forEach { block ->
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant,
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text(
-                                        block,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 5.dp),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(0.7f),
-                                        textAlign = TextAlign.Center
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
                 Spacer(Modifier.height(14.dp))
 
                 Text(
