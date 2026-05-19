@@ -120,7 +120,7 @@ fun KeysScreen(
                             modifier = Modifier.padding(vertical = 7.dp),
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.Medium,
-                            color = if (isSelected) Color.White
+                            color = if (isSelected) MaterialTheme.colorScheme.onPrimary
                             else MaterialTheme.colorScheme.onSurface.copy(0.5f),
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )

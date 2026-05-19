@@ -247,7 +247,7 @@ fun ChatScreen(
                 shape = CircleShape,
                 modifier = Modifier.size(36.dp)
             ) {
-                Icon(Icons.Default.Send, contentDescription = "Send", tint = Color.Black)
+                Icon(Icons.Default.Send, contentDescription = "Send", tint = MaterialTheme.colorScheme.onPrimary)
             }
         }
     }
@@ -329,7 +329,7 @@ private fun MessageBubble(
             Column {
                 Text(
                     message.text,
-                    color = if (isMine) Color.White else MaterialTheme.colorScheme.onSurface
+                    color = if (isMine) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
                 )
                 Spacer(Modifier.height(6.dp))
 
@@ -342,7 +342,7 @@ private fun MessageBubble(
                         text = timeText,
                         style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
-                        color = if (isMine) Color.White.copy(alpha = 0.6f)
+                        color = if (isMine) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.6f)
                         else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
                     )
 
@@ -353,7 +353,7 @@ private fun MessageBubble(
                                 Icon(
                                     Icons.Filled.Check,
                                     contentDescription = "Sent",
-                                    tint = Color.White.copy(alpha = 0.6f),
+                                    tint = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.6f),
                                     modifier = Modifier.size(16.dp)
                                 )
                             }
