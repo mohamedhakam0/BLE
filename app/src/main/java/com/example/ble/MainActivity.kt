@@ -41,7 +41,6 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.ble.ui.ChatScreen
 import com.example.ble.ui.KeysScreen
 import com.example.ble.ui.LogViewerScreen
 import com.example.ble.ui.TrustVerificationScreen
@@ -206,7 +205,8 @@ class MainActivity : ComponentActivity() {
                                 advertiser = bleAdvertiser,
                                 messageRepository = messageRepository,
                                 contactId = contact.senderId,
-                                contactSenderIdHex = contact.senderId
+                                contactSenderIdHex = contact.senderId,
+                                contactPublicKeyB64 = contact.publicKey
                             )
                         }
                         ChatScreen(
@@ -570,6 +570,10 @@ private fun ContactConversationRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
+        if (contact.gradientSeed.length >= 6) {
+            com.example.ble.ui.GradientAvatarCircle(gradientSeedHex = contact.gradientSeed, size = 44.dp)
+            Spacer(Modifier.width(12.dp))
+        }
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 contact.nickname,

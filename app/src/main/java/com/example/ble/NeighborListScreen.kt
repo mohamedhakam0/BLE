@@ -36,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.ble.ui.GradientAvatarCircle
 import com.example.ble.ui.theme.Accent
 import com.example.ble.ui.theme.AccentGlow
 import com.example.ble.ui.theme.NodeGreen
@@ -58,6 +59,9 @@ fun NeighborListScreen(contactRepository: ContactRepository? = null) {
     val contacts by contactsFlow?.collectAsState(initial = emptyList()) ?: remember { androidx.compose.runtime.mutableStateOf(emptyList()) }
     val nameMap = remember(contacts) {
         contacts.associate { it.senderId.lowercase() to it.nickname }
+    }
+    val gradientSeedMap = remember(contacts) {
+        contacts.associate { it.senderId.lowercase() to it.gradientSeed }
     }
 
     Column(
@@ -141,7 +145,11 @@ fun NeighborListScreen(contactRepository: ContactRepository? = null) {
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 items(neighbors, key = { "${it.nodeId}_${it.hopCount}" }) { entry ->
-                    NeighborRow(entry, contactName = nameMap[entry.nodeId.lowercase()])
+                    NeighborRow(
+                        entry = entry,
+                        contactName = nameMap[entry.nodeId.lowercase()],
+                        gradientSeedHex = gradientSeedMap[entry.nodeId.lowercase()] ?: ""
+                    )
                 }
             }
         }
@@ -300,7 +308,11 @@ private fun StatCard(
 }
 
 @Composable
-private fun NeighborRow(entry: NeighborEntry, contactName: String? = null) {
+private fun NeighborRow(
+    entry: NeighborEntry,
+    contactName: String? = null,
+    gradientSeedHex: String = ""
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -311,14 +323,18 @@ private fun NeighborRow(entry: NeighborEntry, contactName: String? = null) {
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .background(
-                        if (entry.hopCount == 0) NodeGreen else NodeAmber,
-                        CircleShape
-                    )
-            )
+            if (contactName != null && gradientSeedHex.length >= 6) {
+                GradientAvatarCircle(gradientSeedHex = gradientSeedHex, size = 32.dp)
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(
+                            if (entry.hopCount == 0) NodeGreen else NodeAmber,
+                            CircleShape
+                        )
+                )
+            }
             Spacer(Modifier.width(10.dp))
             Column {
                 if (contactName != null) {

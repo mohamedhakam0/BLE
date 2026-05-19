@@ -164,6 +164,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.util.Base64
 import androidx.core.content.ContextCompat.*
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -179,8 +180,24 @@ class ChatViewModel(
     private val advertiser: BleAdvertiser,
     private val messageRepository: MessageRepository,
     private val contactId: String,
-    private val contactSenderIdHex: String
+    private val contactSenderIdHex: String,
+    private val contactPublicKeyB64: String = ""
 ) : AndroidViewModel(app) {
+
+    // Derived once per session: first 16 bytes = AES key, next 12 bytes = nonce base
+    private val sessionCrypto: Pair<ByteArray, ByteArray>? by lazy {
+        if (contactPublicKeyB64.isBlank()) return@lazy null
+        try {
+            val identity = nodeIdentity.getOrCreateIdentity()
+            val peerPubKey = Base64.decode(contactPublicKeyB64, Base64.NO_WRAP)
+            if (peerPubKey.size != 32) return@lazy null
+            val shared = CryptoManager.computeSharedSecret(identity.privateKey, peerPubKey)
+            val full = CryptoManager.deriveSessionKey(shared, identity.senderId, peerPubKey.copyOfRange(0, 4))
+            Pair(full.copyOfRange(0, 16), full.copyOfRange(16, 28))
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     val messages: Flow<List<ChatUiMessage>> =
         messageRepository.observeMessagesForContact(contactId).map { list ->
@@ -241,7 +258,15 @@ class ChatViewModel(
                 }
 
                 val msgIdLong = packet.msgId.toLongBE()
-                val text = packet.payload.decodeToString()
+
+                // Decrypt if session key is available; otherwise fall back to plaintext
+                val text = sessionCrypto?.let { (aesKey, nonceBase) ->
+                    try {
+                        val aad = CryptoManager.buildAad(packet)
+                        CryptoManager.decrypt(aesKey, nonceBase, msgIdLong, packet.payload, packet.authTag, aad)
+                            ?.decodeToString()
+                    } catch (_: Exception) { null }
+                } ?: packet.payload.decodeToString()
 
                 AppLogger.d("ChatVM", "CHAT storing: msgId=$msgIdLong text='${text.take(40)}' contactId=$contactId")
 
@@ -302,13 +327,37 @@ class ChatViewModel(
         val cleaned = text.trim()
         if (cleaned.isEmpty()) return
 
-        val me           = nodeIdentity.getOrCreateIdentity().senderId
-        val receiverId   = contactSenderIdHex.hexToByteArray4()
-        val payloadBytes = cleaned.encodeToByteArray()
-        if (payloadBytes.size > 209) return
-
+        val me         = nodeIdentity.getOrCreateIdentity().senderId
+        val receiverId = contactSenderIdHex.hexToByteArray4()
         val msgIdBytes = Random.nextBytes(8)
         val msgIdLong  = msgIdBytes.toLongBE()
+
+        // Build a skeleton packet for AAD computation, then encrypt payload
+        val plainBytes = cleaned.encodeToByteArray()
+        if (plainBytes.size > 209) return
+
+        val skeleton = MeshPacket(
+            type       = PacketType.CHAT,
+            msgId      = msgIdBytes,
+            senderId   = me,
+            receiverId = receiverId,
+            ttl        = 6.toByte(),
+            hopCount   = 0.toByte(),
+            timestamp  = (System.currentTimeMillis() / 1000L).toInt(),
+            payloadLen = plainBytes.size.toByte(),
+            authTag    = ByteArray(16),
+            payload    = plainBytes
+        )
+
+        val (payload, authTag) = sessionCrypto?.let { (aesKey, nonceBase) ->
+            try {
+                val aad = CryptoManager.buildAad(skeleton)
+                val result = CryptoManager.encrypt(aesKey, nonceBase, msgIdLong, plainBytes, aad)
+                Pair(result.ciphertext, result.authTag)
+            } catch (_: Exception) { null }
+        } ?: Pair(plainBytes, Random.nextBytes(16))
+
+        if (payload.size > 209) return
 
         val packet = MeshPacket(
             type       = PacketType.CHAT,
@@ -317,10 +366,10 @@ class ChatViewModel(
             receiverId = receiverId,
             ttl        = 6.toByte(),
             hopCount   = 0.toByte(),
-            timestamp  = (System.currentTimeMillis() / 1000L).toInt(),
-            payloadLen = payloadBytes.size.toByte(),
-            authTag    = Random.nextBytes(16),
-            payload    = payloadBytes
+            timestamp  = skeleton.timestamp,
+            payloadLen = payload.size.toByte(),
+            authTag    = authTag,
+            payload    = payload
         )
 
         viewModelScope.launch(Dispatchers.IO) {
