@@ -404,25 +404,6 @@ private class BleAdvertiserApi26(bluetoothAdapter: BluetoothAdapter?) {
                 return@post
             }
 
-            // ACK jitter: randomise when the ACK hits the air relative
-            // to the sender's TDM scan window. Without jitter, all ACKs
-            // from a session align to the same phase and are consistently
-            // missed. A random 0–400ms delay spreads them across the
-            // 900ms scan gap window.
-            if (packet.type == PacketType.ACK) {
-                val ackJitterMs = (0L..600L).random()
-                if (ackJitterMs > 0L) {
-                    workerHandler.postDelayed({
-                        if (canceledMsgIds.contains(msgIdPreview)) return@postDelayed
-                        if (containsQueuedMsgId(msgIdPreview)) return@postDelayed
-                        urgentQueue.addLast(job)
-                        Log.i("BLE", "Advertiser.enqueue(): URGENT(ACK) msgId=$msgIdPreview jitter=${ackJitterMs}ms")
-                        drainQueue()
-                    }, ackJitterMs)
-                    return@post
-                }
-            }
-
             when (tier) {
                 QueueTier.URGENT -> {
                     if (packet.type == PacketType.LEAVE || forceUrgent) urgentQueue.addFirst(job)

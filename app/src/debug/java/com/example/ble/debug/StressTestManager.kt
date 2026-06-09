@@ -2,8 +2,11 @@ package com.example.ble.debug
 
 import android.content.Context
 import android.os.Environment
+import android.util.Base64
 import com.example.ble.AppLogger
 import com.example.ble.BleAdvertiser
+import com.example.ble.ContactRepository
+import com.example.ble.CryptoManager
 import com.example.ble.MeshPacket
 import com.example.ble.MessageDirection
 import com.example.ble.MessageEntity
@@ -12,6 +15,7 @@ import com.example.ble.MessageStatus
 import com.example.ble.NodeIdentity
 import com.example.ble.PacketSerializer
 import com.example.ble.PacketType
+import java.nio.ByteBuffer
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
@@ -132,8 +136,24 @@ object StressTestManager {
 
         runJob = scope.launch {
             try {
-                val me = nodeIdentity.getOrCreateIdentity().senderId
+                val identity = nodeIdentity.getOrCreateIdentity()
+                val me = identity.senderId
                 val receiverId = contactSenderIdHex.hexToByteArray4()
+
+                val contactRepo = ContactRepository.getInstance(context)
+                val contact = contactRepo.getContact(contactSenderIdHex.trim().lowercase(Locale.US))
+                var aesKey: ByteArray? = null
+                var nonceBase: ByteArray? = null
+                if (contact != null) {
+                    val peerPubKey = Base64.decode(contact.publicKey, Base64.NO_WRAP)
+                    val sharedSecret = CryptoManager.computeSharedSecret(identity.privateKey, peerPubKey)
+                    val keyMaterial = CryptoManager.deriveSessionKey(sharedSecret, me, receiverId)
+                    aesKey = keyMaterial.copyOfRange(0, 16)
+                    nonceBase = keyMaterial.copyOfRange(16, 28)
+                    AppLogger.d(TAG, "Encryption keys derived for contact=$contactSenderIdHex")
+                } else {
+                    AppLogger.w(TAG, "No contact found for $contactSenderIdHex, sending plaintext")
+                }
 
                 for (i in 1..safeCount) {
                     if (!isActive) break
@@ -146,7 +166,7 @@ object StressTestManager {
                     val msgIdHex = msgIdBytes.toHex()
                     val now = System.currentTimeMillis()
 
-                    val packet = MeshPacket(
+                    var packet = MeshPacket(
                         type = PacketType.CHAT,
                         msgId = msgIdBytes,
                         senderId = me,
@@ -158,6 +178,17 @@ object StressTestManager {
                         authTag = Random.nextBytes(16),
                         payload = payloadBytes
                     )
+
+                    if (aesKey != null && nonceBase != null) {
+                        val aad = CryptoManager.buildAad(packet)
+                        val msgCounter = ByteBuffer.wrap(msgIdBytes).long
+                        val result = CryptoManager.encrypt(aesKey, nonceBase, msgCounter, payloadBytes, aad)
+                        packet = packet.copy(
+                            payload = result.ciphertext,
+                            payloadLen = result.ciphertext.size.toByte(),
+                            authTag = result.authTag
+                        )
+                    }
 
                     sendTimesMs[msgIdHex] = now
                     advertiser.broadcast(PacketSerializer.serialize(packet))
