@@ -18,7 +18,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.BugReport
@@ -26,6 +28,7 @@ import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,16 +44,20 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.toArgb
+import com.example.ble.AvatarManager
 import com.example.ble.ui.ContactAvatarCircle
 import com.example.ble.ui.KeysScreen
 import com.example.ble.ui.LogViewerScreen
+import com.example.ble.ui.MeshSettingsScreen
 import com.example.ble.ui.TrustVerificationScreen
 import com.example.ble.ui.theme.BLETheme
 import com.example.ble.ui.theme.isDarkTheme
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -80,6 +87,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Ensure the app draws behind system bars (keyboard, nav bar, status bar).
+        // enableEdgeToEdge() already calls this, but we repeat it to make the intent explicit.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
 
         requestRuntimePermissionsIfNeeded()
         ForegroundMeshService.start(applicationContext)
@@ -101,9 +111,15 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             BLETheme {
+                // Animate the status-bar background on the same 700 ms curve as the theme colors.
+                val statusBarColor by animateColorAsState(
+                    targetValue = if (isDarkTheme) Color(0xFF0A0C10) else Color(0xFFF4F6FB),
+                    animationSpec = tween(durationMillis = 700),
+                    label = "statusBar"
+                )
                 SideEffect {
                     @Suppress("DEPRECATION")
-                    window.statusBarColor = if (isDarkTheme) 0xFF0A0C10.toInt() else 0xFFF4F6FB.toInt()
+                    window.statusBarColor = statusBarColor.toArgb()
                     WindowCompat.getInsetsController(window, window.decorView)
                         .isAppearanceLightStatusBars = !isDarkTheme
                 }
@@ -111,6 +127,7 @@ class MainActivity : ComponentActivity() {
                 var selectedTab by remember { mutableStateOf(Tab.MESSAGES) }
                 var inChat by remember { mutableStateOf(false) }
                 var activeContact by remember { mutableStateOf<ContactLastMessageRow?>(null) }
+                var showSettings by remember { mutableStateOf(false) }
 
                 data class PendingVerification(
                     val peerName: String,
@@ -130,6 +147,9 @@ class MainActivity : ComponentActivity() {
                 BackHandler(enabled = inChat) {
                     inChat = false
                 }
+                BackHandler(enabled = showSettings) {
+                    showSettings = false
+                }
 
                 // Notification deep link
                 LaunchedEffect(Unit) {
@@ -148,7 +168,9 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val pending = pendingVerification
-                if (pending != null) {
+                if (showSettings) {
+                    MeshSettingsScreen(onBack = { showSettings = false })
+                } else if (pending != null) {
                     TrustVerificationScreen(
                         peerName = pending.peerName,
                         peerSenderId = pending.peerSenderId,
@@ -210,6 +232,7 @@ class MainActivity : ComponentActivity() {
                                 nodeIdentity = nodeIdentity,
                                 advertiser = bleAdvertiser,
                                 messageRepository = messageRepository,
+                                contactRepository = contactRepository,
                                 contactId = contact.senderId,
                                 contactSenderIdHex = contact.senderId,
                                 contactPublicKeyB64 = contact.publicKey
@@ -218,7 +241,6 @@ class MainActivity : ComponentActivity() {
                         ChatScreen(
                             contactName = contact.nickname,
                             receiverIdHex = contact.senderId,
-                            gradientSeedHex = contact.gradientSeed,
                             publicKeyB64 = contact.publicKey,
                             viewModel = vm,
                             onBack = { inChat = false }
@@ -230,7 +252,7 @@ class MainActivity : ComponentActivity() {
                     Scaffold(
                         containerColor = MaterialTheme.colorScheme.background,
                         topBar = {
-                            if (showTopBar) PeerReachTopBar()
+                            if (showTopBar) PeerReachTopBar(onSettingsClick = { showSettings = true })
                         },
                         bottomBar = {
                             PeerReachBottomBar(
@@ -351,7 +373,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun PeerReachTopBar() {
+private fun PeerReachTopBar(onSettingsClick: () -> Unit = {}) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -374,18 +396,28 @@ private fun PeerReachTopBar() {
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f)
             )
         }
-        Surface(
-            onClick = { isDarkTheme = !isDarkTheme },
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-        ) {
-            Text(
-                text = if (isDarkTheme) "☀  Light" else "◑  Dark",
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-            )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Surface(
+                onClick = { isDarkTheme = !isDarkTheme },
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+            ) {
+                Text(
+                    text = if (isDarkTheme) "☀  Light" else "◑  Dark",
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
+            Spacer(Modifier.width(4.dp))
+            IconButton(onClick = onSettingsClick) {
+                Icon(
+                    Icons.Default.Settings,
+                    contentDescription = "Settings",
+                    tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+                )
+            }
         }
     }
 }
@@ -428,6 +460,7 @@ private fun PeerReachBottomBar(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MessagesScreen(
     contactRepository: ContactRepository,
@@ -436,6 +469,84 @@ private fun MessagesScreen(
 ) {
     val contactsFlow = remember { contactRepository.observeContactsWithLastMessage() }
     val contacts by contactsFlow.collectAsState(initial = emptyList())
+    val nameMap = remember(contacts) {
+        contacts.associate { it.senderId.lowercase() to it.nickname }
+    }
+
+    val context = LocalContext.current
+    val messageRepository = remember { MessageRepository.getInstance(context) }
+    val allStarred by messageRepository.observeAllStarred().collectAsState(initial = emptyList())
+
+    var showStarredSheet by remember { mutableStateOf(false) }
+    var menuExpanded by remember { mutableStateOf(false) }
+
+    if (showStarredSheet) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showStarredSheet = false },
+            sheetState = sheetState,
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 32.dp)
+            ) {
+                Text(
+                    "All Starred Messages",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+                if (allStarred.isEmpty()) {
+                    Text(
+                        "No starred messages yet.",
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                    )
+                } else {
+                    Column(
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        allStarred.forEach { msg ->
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    val senderLabel = if (msg.direction == MessageDirection.OUTGOING) {
+                                        "You"
+                                    } else {
+                                        nameMap[msg.contactId.lowercase()]
+                                            ?: msg.contactId.take(8).let { if (msg.contactId.length > 8) "$it…" else it }
+                                    }
+                                    Text(
+                                        senderLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(msg.text, style = MaterialTheme.typography.bodyMedium)
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                                            .format(java.util.Date(msg.timestamp)),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -453,12 +564,32 @@ private fun MessagesScreen(
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onBackground
             )
-            IconButton(onClick = onGoToKeys) {
-                Icon(
-                    Icons.Filled.QrCode2,
-                    contentDescription = "Keys",
-                    tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onGoToKeys) {
+                    Icon(
+                        Icons.Filled.QrCode2,
+                        contentDescription = "Keys",
+                        tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+                    )
+                }
+                Box {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(
+                            Icons.Filled.MoreVert,
+                            contentDescription = "More",
+                            tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("All starred messages") },
+                            onClick = { menuExpanded = false; showStarredSheet = true }
+                        )
+                    }
+                }
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -493,10 +624,10 @@ private fun ContactConversationRow(
 
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch(Dispatchers.IO) {
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             context.contentResolver.openInputStream(uri)?.use { stream ->
-                val bmp = BitmapFactory.decodeStream(stream)
-                if (bmp != null) AvatarManager.save(context, contact.senderId, bmp)
+                val bytes = stream.readBytes()
+                AvatarManager.savePeerAvatar(context, contact.senderId, bytes)
             }
         }
     }
@@ -590,14 +721,12 @@ private fun ContactConversationRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (contact.gradientSeed.length >= 6) {
-            ContactAvatarCircle(
-                senderIdHex = contact.senderId,
-                gradientSeedHex = contact.gradientSeed,
-                size = 44.dp
-            )
-            Spacer(Modifier.width(12.dp))
-        }
+        ContactAvatarCircle(
+            senderIdHex = contact.senderId,
+            publicKeyB64 = contact.publicKey,
+            size = 44.dp
+        )
+        Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 contact.nickname,
@@ -641,16 +770,16 @@ private fun ContactConversationRow(
                     onDismissRequest = { menuExpanded = false }
                 ) {
                     DropdownMenuItem(
-                        text = { Text("Rename") },
-                        onClick = { menuExpanded = false; showRenameDialog = true }
-                    )
-                    DropdownMenuItem(
                         text = { Text("Change avatar") },
                         onClick = { menuExpanded = false; pickImage.launch("image/*") }
                     )
                     DropdownMenuItem(
                         text = { Text("Reset avatar") },
-                        onClick = { menuExpanded = false; AvatarManager.delete(context, contact.senderId) }
+                        onClick = { menuExpanded = false; AvatarManager.clearPeerAvatar(context, contact.senderId) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Rename") },
+                        onClick = { menuExpanded = false; showRenameDialog = true }
                     )
                     DropdownMenuItem(
                         text = { Text("Delete Chat") },

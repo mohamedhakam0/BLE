@@ -10,6 +10,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
 import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
 
@@ -40,16 +41,45 @@ interface ContactDao {
     suspend fun delete(senderId: String): Int
 }
 
-@Database(entities = [Contact::class, MessageEntity::class], version = 6, exportSchema = false)
+@Database(
+    entities = [Contact::class, MessageEntity::class, ReactionEntity::class],
+    version = 8,
+    exportSchema = false
+)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun contactDao(): ContactDao
     abstract fun messageDao(): MessageDao
+    abstract fun reactionDao(): ReactionDao
 
     companion object {
         @Volatile private var INSTANCE: AppDatabase? = null
 
-        private val MIGRATION_5_6 = androidx.room.migration.Migration(5, 6) { database ->
+        private val MIGRATION_5_6 = Migration(5, 6) { database ->
             database.execSQL("ALTER TABLE contacts ADD COLUMN gradientSeed TEXT NOT NULL DEFAULT ''")
+        }
+
+        private val MIGRATION_6_7 = Migration(6, 7) { database ->
+            database.execSQL("ALTER TABLE messages ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
+            database.execSQL("ALTER TABLE messages ADD COLUMN hopCount INTEGER NOT NULL DEFAULT -1")
+            database.execSQL("ALTER TABLE messages ADD COLUMN ackTimestamp INTEGER NOT NULL DEFAULT 0")
+            database.execSQL("ALTER TABLE messages ADD COLUMN ackRttMs INTEGER NOT NULL DEFAULT -1")
+            database.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS reactions (
+                    msgId INTEGER NOT NULL,
+                    reactorId TEXT NOT NULL,
+                    emoji TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    PRIMARY KEY (msgId, reactorId, emoji)
+                )
+                """.trimIndent()
+            )
+        }
+
+        private val MIGRATION_7_8 = Migration(7, 8) { database ->
+            database.execSQL("ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+            database.execSQL("ALTER TABLE messages ADD COLUMN deletedForEveryone INTEGER NOT NULL DEFAULT 0")
+            database.execSQL("ALTER TABLE messages ADD COLUMN deletedAt INTEGER NOT NULL DEFAULT 0")
         }
 
         fun getInstance(context: Context): AppDatabase =
@@ -59,7 +89,8 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "peerreach.db"
                 )
-                    .addMigrations(MIGRATION_5_6)
+                    .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                    .fallbackToDestructiveMigrationOnDowngrade()
                     .build().also { INSTANCE = it }
             }
     }
@@ -68,6 +99,7 @@ abstract class AppDatabase : RoomDatabase() {
 class ContactRepository private constructor(private val db: AppDatabase) {
     private val contactDao = db.contactDao()
     private val messageDao = db.messageDao()
+    private val reactionDao = db.reactionDao()
 
     companion object {
         @Volatile private var INSTANCE: ContactRepository? = null
@@ -78,9 +110,7 @@ class ContactRepository private constructor(private val db: AppDatabase) {
             }
     }
 
-    suspend fun upsertContact(contact: Contact) {
-        contactDao.upsert(contact)
-    }
+    suspend fun upsertContact(contact: Contact) = contactDao.upsert(contact)
 
     suspend fun getAllContacts(): List<Contact> = contactDao.getAll()
 
@@ -94,12 +124,16 @@ class ContactRepository private constructor(private val db: AppDatabase) {
 
     suspend fun deleteContactAndChat(senderId: String) {
         db.withTransaction {
+            reactionDao.deleteForContact(senderId)
             messageDao.deleteForContact(senderId)
             contactDao.delete(senderId)
         }
     }
 
     suspend fun deleteChat(senderId: String) {
-        messageDao.deleteForContact(senderId)
+        db.withTransaction {
+            reactionDao.deleteForContact(senderId)
+            messageDao.deleteForContact(senderId)
+        }
     }
 }

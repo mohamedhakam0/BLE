@@ -38,6 +38,38 @@ class NodeIdentity(private val context: Context) {
         private const val KEY_PRIVATE = "private_key_b64"
         private const val KEY_SENDER_ID = "sender_id_b64"
         private const val KEY_NICKNAME = "nickname"
+        private const val KEY_LOCAL_AVATAR = "local_avatar_jpeg"
+
+        /**
+         * Persists [jpeg] bytes as Base64 in EncryptedSharedPreferences so the
+         * running GATT server can serve them after a process restart.
+         */
+        fun saveLocalAvatar(context: Context, jpeg: ByteArray) {
+            val b64 = Base64.encodeToString(jpeg, Base64.NO_WRAP)
+            openSecurePrefs(context).edit().putString(KEY_LOCAL_AVATAR, b64).apply()
+        }
+
+        /**
+         * Returns the stored avatar JPEG bytes, or null if none have been saved.
+         */
+        fun loadLocalAvatar(context: Context): ByteArray? {
+            val b64 = openSecurePrefs(context).getString(KEY_LOCAL_AVATAR, null) ?: return null
+            return try { Base64.decode(b64, Base64.NO_WRAP) } catch (_: Exception) { null }
+        }
+
+        /** Opens (or re-uses the cached) EncryptedSharedPreferences for the secure store. */
+        private fun openSecurePrefs(context: Context): android.content.SharedPreferences {
+            val masterKey = MasterKey.Builder(context.applicationContext)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            return EncryptedSharedPreferences.create(
+                context.applicationContext,
+                SECURE_PREFS_NAME,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        }
     }
 
     private val securePrefs: SharedPreferences by lazy {

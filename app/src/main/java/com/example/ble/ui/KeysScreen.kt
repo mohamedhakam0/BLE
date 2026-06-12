@@ -1,37 +1,54 @@
 package com.example.ble.ui
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.util.Base64
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.ActivityCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ble.AppLogger
 import com.example.ble.Contact
 import com.example.ble.ContactRepository
-import com.example.ble.NodeIdentity
+import com.example.ble.KeysViewModel
 import com.example.ble.QrIdentityPayload
 import com.example.ble.ui.theme.NodeGreen
 import com.example.ble.ui.theme.NodeGreenDim
@@ -39,9 +56,12 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.security.MessageDigest
@@ -59,16 +79,58 @@ fun KeysScreen(
     onVerifyContact: (payload: QrIdentityPayload, publicKeyBytes: ByteArray) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
-    val nodeIdentity = remember { NodeIdentity(context.applicationContext) }
+    val vm: KeysViewModel = viewModel()
 
-    var selectedTabIndex by remember { mutableIntStateOf(0) }
+    val avatarBitmap by vm.localAvatarBitmap.collectAsStateWithLifecycle()
+    val displayName  by vm.localDisplayName.collectAsStateWithLifecycle()
+
+    val publicKeyBytes = remember(publicKeyB64) {
+        try { Base64.decode(publicKeyB64, Base64.NO_WRAP) } catch (_: Exception) { byteArrayOf() }
+    }
+
+    var selectedTabIndex   by remember { mutableIntStateOf(0) }
+    var showEditNameDialog by remember { mutableStateOf(false) }
+    var editNameInput      by remember { mutableStateOf("") }
+
+    val avatarPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) vm.onAvatarSelected(context, uri)
+    }
+
+    // ── Edit display name dialog ──────────────────────────────────────────────
+    if (showEditNameDialog) {
+        AlertDialog(
+            onDismissRequest = { showEditNameDialog = false },
+            title = { Text("Display name") },
+            text = {
+                OutlinedTextField(
+                    value = editNameInput,
+                    onValueChange = { editNameInput = it.take(50) },
+                    singleLine = true,
+                    placeholder = { Text("e.g., Ahmed, Dr. Sara") },
+                    shape = RoundedCornerShape(10.dp)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val cleaned = editNameInput.trim()
+                    if (cleaned.isNotEmpty()) vm.setDisplayName(cleaned)
+                    showEditNameDialog = false
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditNameDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 18.dp, vertical = 8.dp)
     ) {
-        // Page header
+        // ── Page header ───────────────────────────────────────────────────────
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -97,9 +159,83 @@ fun KeysScreen(
             }
         }
 
-        Spacer(Modifier.height(14.dp))
+        // ── Profile identity header ───────────────────────────────────────────
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Avatar circle with edit badge
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clickable {
+                        avatarPickerLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    }
+            ) {
+                if (avatarBitmap != null) {
+                    Image(
+                        bitmap = avatarBitmap!!.asImageBitmap(),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(56.dp)
+                            .clip(CircleShape)
+                    )
+                } else {
+                    GradientAvatarCircle(publicKeyBytes = publicKeyBytes, size = 56.dp)
+                }
+                // Edit badge — small filled circle at bottom-end
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .align(Alignment.BottomEnd)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Edit,
+                        contentDescription = "Change photo",
+                        tint = Color.White,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
 
-        // Tab switcher
+            Spacer(Modifier.width(14.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = displayName.ifBlank { "Node-$senderIdHex" },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Edit",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.clickable {
+                            editNameInput = displayName
+                            showEditNameDialog = true
+                        }
+                    )
+                }
+                Text(
+                    text = "Node $senderIdHex",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // ── Tab switcher ──────────────────────────────────────────────────────
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surface,
@@ -133,7 +269,7 @@ fun KeysScreen(
 
         when (selectedTabIndex) {
             0 -> MyQrTab(
-                nodeIdentity = nodeIdentity,
+                displayName = displayName,
                 senderIdHex = senderIdHex,
                 publicKeyB64 = publicKeyB64
             )
@@ -147,22 +283,27 @@ fun KeysScreen(
 
 @Composable
 private fun MyQrTab(
-    nodeIdentity: NodeIdentity,
+    displayName: String,
     senderIdHex: String,
     publicKeyB64: String
 ) {
-    var displayName by remember { mutableStateOf(nodeIdentity.getNickname().orEmpty()) }
+    val context = LocalContext.current
 
-    val payload = remember(displayName, senderIdHex, publicKeyB64) {
-        QrIdentityPayload(
-            version = 2,
-            nickname = displayName.trim().ifBlank { "Node-$senderIdHex" },
-            displayName = displayName.trim(),
-            senderId = senderIdHex,
-            publicKey = publicKeyB64
-        ).toJson()
+    val qrBitmap by produceState<android.graphics.Bitmap?>(
+        initialValue = null,
+        key1 = displayName
+    ) {
+        value = withContext(Dispatchers.IO) {
+            val json = QrIdentityPayload(
+                version = 2,
+                nickname = displayName.trim().ifBlank { "Node-$senderIdHex" },
+                displayName = displayName.trim(),
+                senderId = senderIdHex,
+                publicKey = publicKeyB64
+            ).toJson()
+            generateQrBitmap(json)
+        }
     }
-    val bitmap = remember(payload) { generateQrBitmap(payload) }
 
     val fingerprint = remember(publicKeyB64) {
         try {
@@ -203,13 +344,14 @@ private fun MyQrTab(
 
                 Spacer(Modifier.height(14.dp))
 
-                // QR frame
+                // QR frame — 220 dp gives ≥ 3 px/module even on low-density tablets
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surface,
                     border = BorderStroke(2.dp, MaterialTheme.colorScheme.outline),
-                    modifier = Modifier.size(160.dp)
+                    modifier = Modifier.size(220.dp)
                 ) {
+                    val bitmap = qrBitmap  // Extract from delegated property for smart cast
                     if (bitmap != null) {
                         Image(
                             bitmap = bitmap.asImageBitmap(),
@@ -315,31 +457,6 @@ private fun MyQrTab(
             KeyInfoCard("Status", "Active", isGreen = true, modifier = Modifier.weight(1f))
         }
 
-        Spacer(Modifier.height(14.dp))
-
-        // Display name editor
-        OutlinedTextField(
-            value = displayName,
-            onValueChange = {
-                displayName = it.take(50)
-                nodeIdentity.setNickname(displayName.trim())
-            },
-            modifier = Modifier.fillMaxWidth(),
-            label = { Text("Display name") },
-            placeholder = { Text("e.g., Ahmed, Dr. Sara") },
-            singleLine = true,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                focusedLabelColor = MaterialTheme.colorScheme.primary,
-                unfocusedLabelColor = MaterialTheme.colorScheme.onSurface.copy(0.5f),
-                cursorColor = MaterialTheme.colorScheme.primary,
-                focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-            ),
-            shape = RoundedCornerShape(12.dp)
-        )
-
         Spacer(Modifier.height(16.dp))
     }
 }
@@ -375,16 +492,37 @@ private fun KeyInfoCard(
     }
 }
 
+private data class PendingKey(
+    val payload: QrIdentityPayload,
+    val publicKeyBytes: ByteArray
+)
+
 @Composable
 private fun ScanTab(
     hasPendingVerification: Boolean,
     onVerifyContact: (payload: QrIdentityPayload, publicKeyBytes: ByteArray) -> Unit
 ) {
     val context = LocalContext.current
-    var isProcessing by remember { mutableStateOf(false) }
 
+    // Non-null while the processing animation is running.
+    var pendingKey by remember { mutableStateOf<PendingKey?>(null) }
+
+    // Reset when TrustVerificationScreen is dismissed and we return to the scan tab.
     LaunchedEffect(hasPendingVerification) {
-        if (!hasPendingVerification) isProcessing = false
+        if (!hasPendingVerification) pendingKey = null
+    }
+
+    // Cancel processing and discard the parsed key if the user presses back.
+    BackHandler(enabled = pendingKey != null) {
+        pendingKey = null
+    }
+
+    // Wait for the full processing animation (≈1800ms), then navigate.
+    // Cancels automatically if the user presses back and pendingKey becomes null.
+    LaunchedEffect(pendingKey) {
+        val key = pendingKey ?: return@LaunchedEffect
+        delay(1800L)
+        onVerifyContact(key.payload, key.publicKeyBytes)
     }
 
     val cameraGranted = remember {
@@ -401,25 +539,24 @@ private fun ScanTab(
             border = BorderStroke(2.dp, MaterialTheme.colorScheme.outline),
             modifier = Modifier.fillMaxWidth().weight(1f)
         ) {
-            if (cameraGranted) {
+            if (pendingKey != null) {
+                ProcessingOverlay()
+            } else if (cameraGranted) {
                 CameraScanPreview(
                     onQrDecoded = { json ->
-                        if (isProcessing) return@CameraScanPreview
-                        isProcessing = true
+                        if (pendingKey != null) return@CameraScanPreview
                         val payload = QrIdentityPayload.fromJson(json)
                         if (payload == null) {
                             Toast.makeText(context, "Invalid QR", Toast.LENGTH_SHORT).show()
-                            isProcessing = false
                             return@CameraScanPreview
                         }
                         val publicKeyBytes = try {
                             Base64.decode(payload.publicKey, Base64.NO_WRAP)
                         } catch (_: Exception) {
                             Toast.makeText(context, "Invalid public key in QR", Toast.LENGTH_SHORT).show()
-                            isProcessing = false
                             return@CameraScanPreview
                         }
-                        onVerifyContact(payload, publicKeyBytes)
+                        pendingKey = PendingKey(payload, publicKeyBytes)
                     }
                 )
             } else {
@@ -435,10 +572,59 @@ private fun ScanTab(
         Spacer(Modifier.height(12.dp))
 
         Text(
-            "Point camera at peer's QR code",
+            if (pendingKey != null) "" else "Point camera at peer's QR code",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurface.copy(0.5f)
         )
+    }
+}
+
+@Composable
+private fun ProcessingOverlay() {
+    // Step labels with their display durations in ms.
+    val steps = remember {
+        listOf(
+            "Reading key..."            to 800L,
+            "Verifying integrity..."    to 100L,
+            "Preparing verification..." to 600L,
+        )
+    }
+    var stepIndex by remember { mutableIntStateOf(0) }
+    val labelAlpha = remember { Animatable(0f) }
+
+    LaunchedEffect(Unit) {
+        steps.forEachIndexed { index, (_, durationMs) ->
+            stepIndex = index
+            labelAlpha.snapTo(0f)
+            labelAlpha.animateTo(1f, tween(durationMillis = 180))
+            delay(durationMs - 180 - 120)
+            labelAlpha.animateTo(0f, tween(durationMillis = 120))
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(24.dp)
+        ) {
+            CircularProgressIndicator(
+                color = MaterialTheme.colorScheme.primary,
+                strokeWidth = 3.dp,
+                modifier = Modifier.size(52.dp)
+            )
+            Text(
+                text = steps[stepIndex].first,
+                style = MaterialTheme.typography.bodyMedium,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = labelAlpha.value)
+            )
+        }
     }
 }
 
@@ -501,7 +687,14 @@ private fun CameraScanPreview(
 }
 
 private fun generateQrBitmap(data: String, size: Int = 512): android.graphics.Bitmap? = try {
-    val bitMatrix = QRCodeWriter().encode(data, BarcodeFormat.QR_CODE, size, size)
+    // EC Level L maximises data capacity per QR version, giving larger modules
+    // at a given display size.  Margin=2 keeps a minimal quiet zone while still
+    // meeting scanner requirements (spec says ≥4 but ML Kit tolerates 2).
+    val hints = mapOf(
+        EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.L,
+        EncodeHintType.MARGIN to 2
+    )
+    val bitMatrix = QRCodeWriter().encode(data, BarcodeFormat.QR_CODE, size, size, hints)
     val pixels = IntArray(size * size) { idx ->
         if (bitMatrix.get(idx % size, idx / size)) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
     }

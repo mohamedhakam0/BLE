@@ -83,6 +83,14 @@ class BleAdvertiser(bluetoothAdapter: BluetoothAdapter?) {
 
     companion object {
         private const val TAG = "BleAdvertiser"
+
+        /**
+         * Advertising TX power (0=Ultra Low, 1=Low, 2=Medium, 3=High), driven by
+         * the Settings screen ("tx_power_level" in "peer_reach_settings").
+         * Read when each advertising set is built — parameters are rebuilt for
+         * every broadcast attempt, so changes apply without a restart.
+         */
+        @Volatile var txPowerLevel: Int = 3
     }
 
     private val impl: BleAdvertiserApi26? =
@@ -534,7 +542,14 @@ private class BleAdvertiserApi26(bluetoothAdapter: BluetoothAdapter?) {
             .setConnectable(false)
             .setScannable(false)
             .setInterval(android.bluetooth.le.AdvertisingSetParameters.INTERVAL_LOW)
-            .setTxPowerLevel(android.bluetooth.le.AdvertisingSetParameters.TX_POWER_HIGH)
+            .setTxPowerLevel(
+                when (BleAdvertiser.txPowerLevel) {
+                    0 -> android.bluetooth.le.AdvertisingSetParameters.TX_POWER_ULTRA_LOW
+                    1 -> android.bluetooth.le.AdvertisingSetParameters.TX_POWER_LOW
+                    2 -> android.bluetooth.le.AdvertisingSetParameters.TX_POWER_MEDIUM
+                    else -> android.bluetooth.le.AdvertisingSetParameters.TX_POWER_HIGH
+                }
+            )
             .setPrimaryPhy(android.bluetooth.BluetoothDevice.PHY_LE_1M)
             .setSecondaryPhy(android.bluetooth.BluetoothDevice.PHY_LE_1M)
             .build()

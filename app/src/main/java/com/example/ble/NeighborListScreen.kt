@@ -37,7 +37,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ble.ui.ContactAvatarCircle
-import com.example.ble.ui.GradientAvatarCircle
 import com.example.ble.ui.theme.Accent
 import com.example.ble.ui.theme.AccentGlow
 import com.example.ble.ui.theme.NodeGreen
@@ -61,8 +60,8 @@ fun NeighborListScreen(contactRepository: ContactRepository? = null) {
     val nameMap = remember(contacts) {
         contacts.associate { it.senderId.lowercase() to it.nickname }
     }
-    val gradientSeedMap = remember(contacts) {
-        contacts.associate { it.senderId.lowercase() to it.gradientSeed }
+    val publicKeyMap = remember(contacts) {
+        contacts.associate { it.senderId.lowercase() to it.publicKey }
     }
 
     Column(
@@ -149,7 +148,7 @@ fun NeighborListScreen(contactRepository: ContactRepository? = null) {
                     NeighborRow(
                         entry = entry,
                         contactName = nameMap[entry.nodeId.lowercase()],
-                        gradientSeedHex = gradientSeedMap[entry.nodeId.lowercase()] ?: ""
+                        publicKeyB64 = publicKeyMap[entry.nodeId.lowercase()] ?: ""
                     )
                 }
             }
@@ -312,7 +311,7 @@ private fun StatCard(
 private fun NeighborRow(
     entry: NeighborEntry,
     contactName: String? = null,
-    gradientSeedHex: String = ""
+    publicKeyB64: String = ""
 ) {
     Row(
         modifier = Modifier
@@ -324,22 +323,14 @@ private fun NeighborRow(
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-            if (contactName != null && gradientSeedHex.length >= 6) {
-                ContactAvatarCircle(
-                    senderIdHex = entry.nodeId.lowercase(),
-                    gradientSeedHex = gradientSeedHex,
-                    size = 32.dp
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .background(
-                            if (entry.hopCount == 0) NodeGreen else NodeAmber,
-                            CircleShape
-                        )
-                )
-            }
+            // Always render a deterministic gradient avatar.
+            // ContactAvatarCircle falls back to nodeId bytes when publicKeyB64 is blank,
+            // so unknown (not-yet-trusted) peers still get a stable, distinct avatar.
+            ContactAvatarCircle(
+                senderIdHex = entry.nodeId.lowercase(),
+                publicKeyB64 = publicKeyB64,
+                size = 32.dp
+            )
             Spacer(Modifier.width(10.dp))
             Column {
                 if (contactName != null) {

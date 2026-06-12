@@ -29,9 +29,7 @@ data class QrIdentityPayload(
     /** Serializes payload to JSON string for QR generation. */
     fun toJson(): String = JSONObject().apply {
         put("version", version)
-        // Always include displayName going forward.
         put("displayName", displayName)
-        // Also include nickname for backward compatibility with older builds.
         put("nickname", if (nickname.isNotBlank()) nickname else displayName)
         put("senderId", senderId)
         put("publicKey", publicKey)
@@ -48,11 +46,8 @@ data class QrIdentityPayload(
             val version = obj.optInt("version", 1)
             val senderId = obj.getString("senderId")
             val publicKey = obj.getString("publicKey")
-
-            // Old payloads only have nickname.
             val nickname = obj.optString("nickname", "")
             val displayName = obj.optString("displayName", "")
-
             QrIdentityPayload(
                 version = version,
                 nickname = nickname,

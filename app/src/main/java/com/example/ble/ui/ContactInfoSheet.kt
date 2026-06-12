@@ -15,7 +15,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.example.ble.AvatarManager
 import java.security.MessageDigest
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -23,14 +22,9 @@ import java.security.MessageDigest
 fun ContactInfoSheet(
     contactName: String,
     senderIdHex: String,
-    gradientSeedHex: String,
     publicKeyB64: String,
     onDismiss: () -> Unit
 ) {
-    val context = LocalContext.current
-    val counter = AvatarManager.changeCounter
-    val hasCustom = remember(senderIdHex, counter) { AvatarManager.hasAvatar(context, senderIdHex) }
-
     val fingerprint = remember(publicKeyB64) {
         if (publicKeyB64.isBlank()) return@remember emptyList()
         try {
@@ -69,43 +63,11 @@ fun ContactInfoSheet(
 
             Spacer(Modifier.height(20.dp))
 
-            if (hasCustom) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(24.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        GradientAvatarCircle(gradientSeedHex = gradientSeedHex, size = 64.dp)
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "generated",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                        )
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        ContactAvatarCircle(
-                            senderIdHex = senderIdHex,
-                            gradientSeedHex = gradientSeedHex,
-                            size = 64.dp
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "custom",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                        )
-                    }
-                }
-            } else {
-                ContactAvatarCircle(
-                    senderIdHex = senderIdHex,
-                    gradientSeedHex = gradientSeedHex,
-                    size = 80.dp
-                )
-            }
+            ContactAvatarCircle(
+                senderIdHex = senderIdHex,
+                publicKeyB64 = publicKeyB64,
+                size = 80.dp
+            )
 
             Spacer(Modifier.height(12.dp))
 

@@ -38,6 +38,10 @@ android {
     buildFeatures {
         compose = true
     }
+    testOptions {
+        // Let android.util.Log calls no-op in local JVM unit tests instead of throwing.
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {

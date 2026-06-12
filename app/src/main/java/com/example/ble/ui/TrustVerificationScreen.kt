@@ -1,9 +1,13 @@
 package com.example.ble.ui
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -17,6 +21,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -30,73 +35,203 @@ import androidx.compose.ui.unit.dp
 import com.example.ble.AvatarManager
 import com.example.ble.ui.theme.NodeGreen
 import java.security.MessageDigest
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.sin
 
-fun generateAvatarGradient(publicKeyBytes: ByteArray): Brush {
-    val h1 = (publicKeyBytes[0].toInt() and 0xFF) / 255f * 360f
-    val h2 = (publicKeyBytes[1].toInt() and 0xFF) / 255f * 360f
-    val h3 = (publicKeyBytes[2].toInt() and 0xFF) / 255f * 360f
-    return Brush.radialGradient(
-        listOf(
-            Color.hsl(h1, 0.7f, 0.6f),
-            Color.hsl(h2, 0.7f, 0.55f),
-            Color.hsl(h3, 0.65f, 0.45f)
-        )
+// ── Avatar data model ─────────────────────────────────────────────────────────
+
+private data class AvatarBlob(
+    val centerX: Float,
+    val centerY: Float,
+    val radius: Float,
+    val color: Color,
+    val alpha: Float
+)
+
+private data class AvatarSpec(
+    val colorStops: Array<Pair<Float, Color>>,
+    val angleRad: Float,
+    val blobs: List<AvatarBlob>,
+    val grain: List<Pair<Offset, Float>>
+)
+
+// ── Gradient derivation ───────────────────────────────────────────────────────
+
+private fun sha256(input: ByteArray): ByteArray =
+    MessageDigest.getInstance("SHA-256").digest(input)
+
+/**
+ * Builds a fully deterministic AvatarSpec from raw public-key bytes.
+ *
+ * Algorithm:
+ *  - SHA-256(key) → 32-byte hash h
+ *  - 6 hue values from h[0..5]: hue = byte/255 × 360°, sat = 70%, light = 55%
+ *  - 6-stop sorted linear gradient; positions from h[6..11], endpoints pinned to 0/1
+ *  - Direction angle from h[20]
+ *  - 8 radial blobs: 4 large (28–68% of diameter, alpha 36–64%) +
+ *                    4 accent (8–28%, alpha 52–88%)
+ *  - 64 grain dots for texture (alpha 4–12%)
+ *
+ * Same publicKeyBytes → identical spec; different keys → visually distinct avatars.
+ */
+private fun buildAvatarSpec(publicKeyBytes: ByteArray): AvatarSpec {
+    val source = if (publicKeyBytes.isNotEmpty()) publicKeyBytes else byteArrayOf(0)
+    val h = sha256(source)
+
+    // Spec requires fixed sat + lightness so only hue varies per key.
+    fun hslFrom(byteIdx: Int) = Color.hsl(
+        hue        = (h[byteIdx % 32].toInt() and 0xFF) / 255f * 360f,
+        saturation = 0.70f,
+        lightness  = 0.55f
     )
+
+    // 6-stop gradient — positions driven by h[6..11], sorted, endpoints pinned.
+    val stops: Array<Pair<Float, Color>> = run {
+        val raw = (0 until 6).map { i ->
+            // Spread positions across (0.05, 0.95) before sort so they don't crowd edges.
+            val pos = 0.05f + (h[(i + 6) % 32].toInt() and 0xFF) / 255f * 0.90f
+            pos to hslFrom(i)
+        }.sortedBy { it.first }.toMutableList()
+        raw[0]             = 0f to raw[0].second
+        raw[raw.lastIndex] = 1f to raw[raw.lastIndex].second
+        raw.toTypedArray()
+    }
+
+    // Gradient direction angle from h[20].
+    val angle = (h[20].toInt() and 0xFF) / 255f * 2f * PI.toFloat()
+
+    // 8 blobs.  Byte layout per blob i: [cx=h[13+i*3], cy=h[14+i*3], r=h[15+i*3], α=h[16+i*3]].
+    val blobs = (0 until 8).map { i ->
+        val o     = 13 + i * 3
+        val cx    = (h[o % 32].toInt()       and 0xFF) / 255f
+        val cy    = (h[(o + 1) % 32].toInt() and 0xFF) / 255f
+        val large = i < 4
+        val radius = if (large)
+            0.28f + (h[(o + 2) % 32].toInt() and 0xFF) / 255f * 0.40f   // 28–68 %
+        else
+            0.08f + (h[(o + 2) % 32].toInt() and 0xFF) / 255f * 0.20f   //  8–28 %
+        val alpha = if (large)
+            0.36f + (h[(o + 3) % 32].toInt() and 0xFF) / 255f * 0.28f   // 36–64 %
+        else
+            0.52f + (h[(o + 3) % 32].toInt() and 0xFF) / 255f * 0.36f   // 52–88 %
+        AvatarBlob(cx, cy, radius, hslFrom(i + 1), alpha)
+    }
+
+    // 64 grain dots — positions and alphas derived by cycling through h[].
+    val grain = (0 until 64).map { i ->
+        val gx = (h[(i * 3)       % 32].toInt() and 0xFF) / 255f
+        val gy = (h[(i * 3 + 1)   % 32].toInt() and 0xFF) / 255f
+        val ga = 0.04f + (h[(i * 3 + 2) % 32].toInt() and 0xFF) / 255f * 0.08f
+        Offset(gx, gy) to ga
+    }
+
+    return AvatarSpec(stops, angle, blobs, grain)
 }
 
+// ── Public composables ────────────────────────────────────────────────────────
+
+/**
+ * Renders a deterministic mesh-gradient circle derived from [publicKeyBytes].
+ * No photos, no initials — always a pure gradient shape.
+ */
 @Composable
 fun GradientAvatarCircle(
-    gradientSeedHex: String,
+    publicKeyBytes: ByteArray,
     size: Dp = 80.dp
 ) {
-    val bytes = remember(gradientSeedHex) {
-        if (gradientSeedHex.length >= 6) {
-            try {
-                ByteArray(3) { i ->
-                    gradientSeedHex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
-                }
-            } catch (_: Exception) { null }
-        } else null
-    }
+    // toList() gives structural equality so remember reuses the spec when contents are equal.
+    val spec = remember(publicKeyBytes.toList()) { buildAvatarSpec(publicKeyBytes) }
 
-    if (bytes != null) {
-        val gradient = remember(bytes[0], bytes[1], bytes[2]) {
-            generateAvatarGradient(bytes)
+    Canvas(modifier = Modifier.size(size).clip(CircleShape)) {
+        val w  = this.size.width
+        val h  = this.size.height
+        val cx = w / 2f
+        val cy = h / 2f
+        // Gradient extends beyond the circle so edges are fully saturated.
+        val r  = max(w, h) * 0.76f
+        val dx = cos(spec.angleRad) * r
+        val dy = sin(spec.angleRad) * r
+
+        // Layer 1: 6-stop linear gradient base.
+        drawRect(
+            brush = Brush.linearGradient(
+                colorStops = spec.colorStops,
+                start = Offset(cx - dx, cy - dy),
+                end   = Offset(cx + dx, cy + dy)
+            )
+        )
+
+        // Layer 2: radial blob overlays — center-opaque, edge-transparent.
+        spec.blobs.forEach { blob ->
+            val bc = Offset(blob.centerX * w, blob.centerY * h)
+            val br = blob.radius * max(w, h)
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(blob.color.copy(alpha = blob.alpha), Color.Transparent),
+                    center = bc,
+                    radius = br
+                ),
+                center = bc,
+                radius = br
+            )
         }
-        Box(
-            modifier = Modifier
-                .size(size)
-                .clip(CircleShape)
-                .background(gradient)
-        )
-    } else {
-        Box(
-            modifier = Modifier
-                .size(size)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-        )
+
+        // Layer 3: grain texture — tiny white/black dots at low alpha.
+        val dotRadius = max(w, h) * 0.0085f
+        spec.grain.forEachIndexed { i, (pt, alpha) ->
+            drawCircle(
+                color  = (if (i % 2 == 0) Color.White else Color.Black).copy(alpha = alpha),
+                radius = dotRadius,
+                center = Offset(pt.x * w, pt.y * h)
+            )
+        }
     }
 }
 
+/**
+ * Shows a circular peer avatar: the user's locally-assigned photo if one has been saved,
+ * otherwise a deterministic gradient generated from the peer's node ID.
+ * No photos are transmitted; all state is local-only.
+ */
 @Composable
 fun ContactAvatarCircle(
     senderIdHex: String,
-    gradientSeedHex: String,
-    size: Dp = 44.dp
+    publicKeyB64: String,
+    size: Dp = 44.dp,
+    onLongPress: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
-    val counter = AvatarManager.changeCounter
-    val bitmap = remember(senderIdHex, counter) { AvatarManager.load(context, senderIdHex) }
-    if (bitmap != null) {
+    val changeCounter = AvatarManager.changeCounter
+    val customBitmap: Bitmap? = remember(senderIdHex, changeCounter) {
+        val bytes = AvatarManager.loadPeerAvatar(context, senderIdHex) ?: return@remember null
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+    }
+
+    val interactionModifier = if (onLongPress != null)
+        Modifier
+            .size(size)
+            .clip(CircleShape)
+            .combinedClickable(onLongClick = onLongPress, onClick = {})
+    else
+        Modifier.size(size).clip(CircleShape)
+
+    if (customBitmap != null) {
         Image(
-            bitmap = bitmap.asImageBitmap(),
+            bitmap = customBitmap.asImageBitmap(),
             contentDescription = null,
-            modifier = Modifier.size(size).clip(CircleShape),
-            contentScale = ContentScale.Crop
+            contentScale = ContentScale.Crop,
+            modifier = interactionModifier
         )
     } else {
-        GradientAvatarCircle(gradientSeedHex = gradientSeedHex, size = size)
+        NodeIdGradientAvatar(
+            nodeId = senderIdHex,
+            modifier = if (onLongPress != null)
+                Modifier.combinedClickable(onLongClick = onLongPress, onClick = {})
+            else Modifier,
+            size = size
+        )
     }
 }
 
@@ -107,6 +242,8 @@ internal fun hexToFingerprintColor(hex: String): Color = try {
 } catch (_: Exception) {
     Color.Gray
 }
+
+// ── Trust Verification screen ─────────────────────────────────────────────────
 
 @Composable
 fun TrustVerificationScreen(
@@ -131,19 +268,8 @@ fun TrustVerificationScreen(
     }
 
     val senderIdDisplay = remember(peerSenderId) {
-        if (peerSenderId.length > 12) {
-            "${peerSenderId.take(8)}…${peerSenderId.takeLast(4)}"
-        } else peerSenderId
-    }
-
-    val gradientSeedHex = remember(publicKeyBytes) {
-        if (publicKeyBytes.size >= 3)
-            "%02X%02X%02X".format(
-                publicKeyBytes[0].toInt() and 0xFF,
-                publicKeyBytes[1].toInt() and 0xFF,
-                publicKeyBytes[2].toInt() and 0xFF
-            )
-        else ""
+        if (peerSenderId.length > 12) "${peerSenderId.take(8)}…${peerSenderId.takeLast(4)}"
+        else peerSenderId
     }
 
     var showMitmDialog by remember { mutableStateOf(false) }
@@ -178,7 +304,6 @@ fun TrustVerificationScreen(
             .padding(horizontal = 18.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // 1. Top banner
         Surface(
             shape = RoundedCornerShape(50.dp),
             color = Color(0xFF1A2E1A),
@@ -207,7 +332,6 @@ fun TrustVerificationScreen(
 
         Spacer(Modifier.height(20.dp))
 
-        // 2. "You are verifying" card with rename
         Surface(
             shape = RoundedCornerShape(18.dp),
             color = MaterialTheme.colorScheme.surface,
@@ -226,10 +350,9 @@ fun TrustVerificationScreen(
                     fontFamily = FontFamily.Monospace
                 )
                 Spacer(Modifier.height(16.dp))
-                GradientAvatarCircle(gradientSeedHex = gradientSeedHex, size = 80.dp)
+                GradientAvatarCircle(publicKeyBytes = publicKeyBytes, size = 80.dp)
                 Spacer(Modifier.height(12.dp))
 
-                // Name with edit button
                 if (isEditingName) {
                     OutlinedTextField(
                         value = displayName,
@@ -251,18 +374,11 @@ fun TrustVerificationScreen(
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.primary
                             )
-                        ) {
-                            Text("Done")
-                        }
+                        ) { Text("Done") }
                         OutlinedButton(
-                            onClick = {
-                                displayName = peerName
-                                isEditingName = false
-                            },
+                            onClick = { displayName = peerName; isEditingName = false },
                             modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Cancel")
-                        }
+                        ) { Text("Cancel") }
                     }
                 } else {
                     Row(
@@ -299,7 +415,6 @@ fun TrustVerificationScreen(
 
         Spacer(Modifier.height(14.dp))
 
-        // 3. Visual fingerprint card
         Surface(
             shape = RoundedCornerShape(18.dp),
             color = MaterialTheme.colorScheme.surface,
@@ -326,7 +441,6 @@ fun TrustVerificationScreen(
                 )
                 Spacer(Modifier.height(14.dp))
 
-                // 4×2 colored tile grid
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     fingerprint.chunked(4).forEach { row ->
                         Row(
@@ -380,13 +494,12 @@ fun TrustVerificationScreen(
 
         Spacer(Modifier.height(24.dp))
 
-        // 4. Action buttons
         Button(
             onClick = { onTrust(displayName.trim().ifBlank { peerName }) },
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
+                contentColor   = MaterialTheme.colorScheme.onPrimary
             ),
             shape = RoundedCornerShape(12.dp)
         ) {

@@ -228,7 +228,10 @@ class ForegroundMeshService : Service() {
             val isForMe = packet.receiverId.contentEquals(localSenderId)
             val isBroadcast = packet.receiverId.all { it == 0xFF.toByte() }
             val ttl = packet.ttl.toInt() and 0xFF
-            val shouldRelay = ttl > 0 && !packet.receiverId.contentEquals(localSenderId)
+            // Settings opt-out: "Act as Relay" toggle (single preference read at the relay gate).
+            val relayEnabled = getSharedPreferences(MeshSettingsViewModel.PREFS_NAME, MODE_PRIVATE)
+                .getBoolean(MeshSettingsViewModel.KEY_RELAY_MODE, true)
+            val shouldRelay = relayEnabled && ttl > 0 && !packet.receiverId.contentEquals(localSenderId)
             if (shouldRelay) {
                 if (packet.type == PacketType.ACK) return@BleScanner  // never relay ACKs at the originating node
 
@@ -341,21 +344,8 @@ class ForegroundMeshService : Service() {
                 AppLogger.d(DIAG_TAG, "ACK sent for msgId=${ack.msgId.toHex()} original=${packet.msgId.toHex()} to ${packet.senderId.toHex()}")
             }
 
-            // ── 2. Notification gate ──
-            val appInForeground = isAppInForeground()
-            AppLogger.d(DIAG_TAG, "notificationGate: receiverMatches=$isForMe appInForeground=$appInForeground")
-
-            if (packet.type == PacketType.CHAT && isForMe && !appInForeground) {
-                val senderHex = packet.senderId.joinToString("") { "%02x".format(it) }.lowercase()
-                val preview = runCatching { packet.payload.decodeToString() }.getOrDefault("(message)")
-                val senderNick = contactNicknameCache[senderHex] ?: "Peer-$senderHex"
-                NotificationHelper.showMessageNotification(
-                    context = applicationContext,
-                    senderName = senderNick,
-                    preview = preview.take(80),
-                    contactId = senderHex
-                )
-            }
+            // ── 2. Notification gate (handled in ChatViewModel after decryption) ──
+            AppLogger.d(DIAG_TAG, "notificationGate: receiverMatches=$isForMe appInForeground=${isAppInForeground()}")
 
             // ── 3. Forward packet bytes to the app layer ──
              val broadcastBytes = PacketSerializer.serialize(packet)
