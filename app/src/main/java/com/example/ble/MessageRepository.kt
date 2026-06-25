@@ -88,6 +88,9 @@ interface MessageDao {
     @Query("DELETE FROM messages WHERE contactId = :contactId")
     suspend fun deleteForContact(contactId: String)
 
+    @Query("DELETE FROM messages")
+    suspend fun deleteAll(): Int
+
     @Query("SELECT msgId FROM messages WHERE contactId = :contactId")
     suspend fun getMessageIdsForContact(contactId: String): List<Long>
 
@@ -140,6 +143,9 @@ interface ReactionDao {
 
     @Query("DELETE FROM reactions WHERE msgId IN (SELECT msgId FROM messages WHERE contactId = :contactId)")
     suspend fun deleteForContact(contactId: String)
+
+    @Query("DELETE FROM reactions")
+    suspend fun deleteAll(): Int
 }
 
 /** Repository wrapper around MessageDao and ReactionDao used by ViewModels and service layer. */

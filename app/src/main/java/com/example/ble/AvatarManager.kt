@@ -19,15 +19,29 @@ object AvatarManager {
     private const val PREFS_NAME = "avatar_store"
     private const val KEY_MY_AVATAR = "my_avatar_jpeg"
 
-    private fun openPrefs(context: Context) = EncryptedSharedPreferences.create(
-        context.applicationContext,
-        PREFS_NAME,
-        MasterKey.Builder(context.applicationContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
+    @Volatile private var cachedPrefs: android.content.SharedPreferences? = null
+
+    private fun openPrefs(context: Context): android.content.SharedPreferences {
+        cachedPrefs?.let { return it }
+        return synchronized(this) {
+            cachedPrefs ?: buildPrefs(context.applicationContext).also { cachedPrefs = it }
+        }
+    }
+
+    private fun buildPrefs(ctx: Context): android.content.SharedPreferences {
+        fun create() = EncryptedSharedPreferences.create(
+            ctx, PREFS_NAME,
+            MasterKey.Builder(ctx).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+        return try {
+            create()
+        } catch (_: Exception) {
+            ctx.deleteSharedPreferences(PREFS_NAME)
+            create()
+        }
+    }
 
     fun saveMyAvatar(context: Context, jpeg: ByteArray) {
         val compressed = compressAvatar(jpeg, 96) ?: return

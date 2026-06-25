@@ -3,6 +3,7 @@ package com.example.ble
 import android.Manifest
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -22,11 +23,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -39,7 +40,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -55,6 +55,7 @@ import com.example.ble.ui.ContactAvatarCircle
 import com.example.ble.ui.KeysScreen
 import com.example.ble.ui.LogViewerScreen
 import com.example.ble.ui.MeshSettingsScreen
+import com.example.ble.ui.TestModeScreen
 import com.example.ble.ui.TrustVerificationScreen
 import com.example.ble.ui.theme.BLETheme
 import com.example.ble.ui.theme.isDarkTheme
@@ -66,17 +67,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Calendar
 import java.util.Locale
+import com.example.ble.ui.OnboardingPrefs
+import com.example.ble.ui.OnboardingScreen
 
 enum class Tab {
-    LOGS, STRESS, MESSAGES, NETWORK, KEYS
+    DIAGNOSTICS, MESSAGES, NETWORK, KEYS
 }
 
 class MainActivity : ComponentActivity() {
-
-    companion object {
-        private const val REQ_PERMS = 100
-        private const val REQ_NOTIF = 101
-    }
 
     private lateinit var nodeIdentity: NodeIdentity
     private lateinit var contactRepository: ContactRepository
@@ -91,8 +89,11 @@ class MainActivity : ComponentActivity() {
         // enableEdgeToEdge() already calls this, but we repeat it to make the intent explicit.
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
-        requestRuntimePermissionsIfNeeded()
-        ForegroundMeshService.start(applicationContext)
+        // Only start the service now for returning users who already granted permissions.
+        // First-time users trigger it from OnboardingScreen after granting permissions.
+        if (OnboardingPrefs.isDone(this)) {
+            ForegroundMeshService.start(applicationContext)
+        }
 
         nodeIdentity = NodeIdentity(this)
         contactRepository = ContactRepository.getInstance(this)
@@ -111,9 +112,13 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             BLETheme {
+                val context = LocalContext.current
+                var showOnboarding by remember { mutableStateOf(!OnboardingPrefs.isDone(context)) }
+
                 // Animate the status-bar background on the same 700 ms curve as the theme colors.
+                // Force dark status bar during onboarding (onboarding always has a dark background).
                 val statusBarColor by animateColorAsState(
-                    targetValue = if (isDarkTheme) Color(0xFF0A0C10) else Color(0xFFF4F6FB),
+                    targetValue = if (showOnboarding || isDarkTheme) Color(0xFF0A0C10) else Color(0xFFF4F6FB),
                     animationSpec = tween(durationMillis = 700),
                     label = "statusBar"
                 )
@@ -121,13 +126,22 @@ class MainActivity : ComponentActivity() {
                     @Suppress("DEPRECATION")
                     window.statusBarColor = statusBarColor.toArgb()
                     WindowCompat.getInsetsController(window, window.decorView)
-                        .isAppearanceLightStatusBars = !isDarkTheme
+                        .isAppearanceLightStatusBars = !(showOnboarding || isDarkTheme)
                 }
+
+                if (showOnboarding) {
+                    OnboardingScreen(onComplete = {
+                        OnboardingPrefs.markDone(context)
+                        showOnboarding = false
+                        ForegroundMeshService.start(context.applicationContext)
+                    })
+                } else {
 
                 var selectedTab by remember { mutableStateOf(Tab.MESSAGES) }
                 var inChat by remember { mutableStateOf(false) }
                 var activeContact by remember { mutableStateOf<ContactLastMessageRow?>(null) }
                 var showSettings by remember { mutableStateOf(false) }
+                var showTestMode by remember { mutableStateOf(false) }
 
                 data class PendingVerification(
                     val peerName: String,
@@ -150,6 +164,16 @@ class MainActivity : ComponentActivity() {
                 BackHandler(enabled = showSettings) {
                     showSettings = false
                 }
+                BackHandler(enabled = showTestMode) {
+                    showTestMode = false
+                }
+                var showLogsFromDiagnostics by remember { mutableStateOf(false) }
+                BackHandler(enabled = showLogsFromDiagnostics) {
+                    showLogsFromDiagnostics = false
+                }
+                LaunchedEffect(selectedTab) {
+                    if (selectedTab != Tab.DIAGNOSTICS) showLogsFromDiagnostics = false
+                }
 
                 // Notification deep link
                 LaunchedEffect(Unit) {
@@ -168,8 +192,25 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val pending = pendingVerification
-                if (showSettings) {
-                    MeshSettingsScreen(onBack = { showSettings = false })
+                if (showTestMode) {
+                    TestModeScreen(
+                        nodeIdentity      = nodeIdentity,
+                        advertiser        = bleAdvertiser,
+                        contactRepository = contactRepository,
+                        application       = application,
+                        onBack            = { showTestMode = false }
+                    )
+                } else if (showSettings) {
+                    MeshSettingsScreen(
+                        onBack = { showSettings = false },
+                        onIdentityReset = {
+                            startActivity(
+                                Intent(this@MainActivity, MainActivity::class.java).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                                }
+                            )
+                        }
+                    )
                 } else if (pending != null) {
                     TrustVerificationScreen(
                         peerName = pending.peerName,
@@ -252,7 +293,10 @@ class MainActivity : ComponentActivity() {
                     Scaffold(
                         containerColor = MaterialTheme.colorScheme.background,
                         topBar = {
-                            if (showTopBar) PeerReachTopBar(onSettingsClick = { showSettings = true })
+                            if (showTopBar) PeerReachTopBar(
+                                onSettingsClick = { showSettings = true },
+                                onTestModeClick = { showTestMode = true }
+                            )
                         },
                         bottomBar = {
                             PeerReachBottomBar(
@@ -268,25 +312,27 @@ class MainActivity : ComponentActivity() {
                                 .background(MaterialTheme.colorScheme.background)
                         ) {
                             when (selectedTab) {
-                                Tab.LOGS -> {
-                                    LogViewerScreen(onBack = { selectedTab = Tab.MESSAGES })
-                                }
-                                Tab.STRESS -> {
-                                    val stressVm: com.example.ble.debug.StressTestViewModel =
-                                        viewModel(
-                                            key = "stress_vm",
-                                            factory = com.example.ble.debug.StressTestViewModel.Factory(
-                                                application = application as android.app.Application,
-                                                nodeIdentity = nodeIdentity,
-                                                advertiser = bleAdvertiser,
-                                                messageRepository = messageRepository,
-                                                contactRepository = contactRepository
+                                Tab.DIAGNOSTICS -> {
+                                    if (showLogsFromDiagnostics) {
+                                        LogViewerScreen(onBack = { showLogsFromDiagnostics = false })
+                                    } else {
+                                        val stressVm: com.example.ble.debug.StressTestViewModel =
+                                            viewModel(
+                                                key = "stress_vm",
+                                                factory = com.example.ble.debug.StressTestViewModel.Factory(
+                                                    application = application as android.app.Application,
+                                                    nodeIdentity = nodeIdentity,
+                                                    advertiser = bleAdvertiser,
+                                                    messageRepository = messageRepository,
+                                                    contactRepository = contactRepository
+                                                )
                                             )
+                                        com.example.ble.debug.StressTestScreen(
+                                            viewModel = stressVm,
+                                            onBack = { selectedTab = Tab.MESSAGES },
+                                            onShowLogs = { showLogsFromDiagnostics = true }
                                         )
-                                    com.example.ble.debug.StressTestScreen(
-                                        viewModel = stressVm,
-                                        onBack = { selectedTab = Tab.MESSAGES }
-                                    )
+                                    }
                                 }
                                 Tab.MESSAGES -> {
                                     MessagesScreen(
@@ -323,42 +369,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-            }
-        }
-    }
-
-    private fun requestRuntimePermissionsIfNeeded() {
-        val needed = mutableListOf<String>()
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
-                needed += Manifest.permission.BLUETOOTH_SCAN
-            }
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                needed += Manifest.permission.BLUETOOTH_CONNECT
-            }
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) != PackageManager.PERMISSION_GRANTED) {
-                needed += Manifest.permission.BLUETOOTH_ADVERTISE
-            }
-        } else {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                needed += Manifest.permission.ACCESS_FINE_LOCATION
-            }
-        }
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            needed += Manifest.permission.CAMERA
-        }
-
-        if (needed.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, needed.toTypedArray(), REQ_PERMS)
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(
-                    this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF
-                )
+                } // end else (onboarding shown)
             }
         }
     }
@@ -373,7 +384,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun PeerReachTopBar(onSettingsClick: () -> Unit = {}) {
+private fun PeerReachTopBar(onSettingsClick: () -> Unit = {}, onTestModeClick: () -> Unit = {}) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -411,6 +422,13 @@ private fun PeerReachTopBar(onSettingsClick: () -> Unit = {}) {
                 )
             }
             Spacer(Modifier.width(4.dp))
+            IconButton(onClick = onTestModeClick) {
+                Icon(
+                    Icons.Default.Science,
+                    contentDescription = "Test Mode",
+                    tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+                )
+            }
             IconButton(onClick = onSettingsClick) {
                 Icon(
                     Icons.Default.Settings,
@@ -436,8 +454,7 @@ private fun PeerReachBottomBar(
     ) {
         data class NavItem(val tab: Tab, val icon: ImageVector, val label: String)
         val items = listOf(
-            NavItem(Tab.LOGS, Icons.AutoMirrored.Filled.List, "Logs"),
-            NavItem(Tab.STRESS, Icons.Filled.BugReport, "Stress"),
+            NavItem(Tab.DIAGNOSTICS, Icons.Filled.BugReport, "Diagnostics"),
             NavItem(Tab.MESSAGES, Icons.Filled.ChatBubbleOutline, "Chats"),
             NavItem(Tab.NETWORK, Icons.Filled.Sensors, "Network"),
             NavItem(Tab.KEYS, Icons.Filled.QrCode2, "Keys"),
@@ -595,10 +612,30 @@ private fun MessagesScreen(
         Spacer(Modifier.height(12.dp))
 
         if (contacts.isEmpty()) {
-            Text(
-                "No contacts yet. Go to Keys tab to scan a friend's QR.",
-                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f)
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.QrCode2,
+                        contentDescription = null,
+                        modifier = Modifier.size(56.dp),
+                        tint = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.15f)
+                    )
+                    Text(
+                        "Scan a QR code to add your first contact",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.35f),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+            }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(contacts) { c ->

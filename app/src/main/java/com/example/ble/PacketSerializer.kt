@@ -7,7 +7,7 @@ import java.nio.ByteOrder
 /**
  * Serialization layer for mesh packet transport bytes.
  *
- * Wire format (Big-Endian):
+ * Wire format (Big-Endian) — matches ESP32 gateway firmware exactly:
  *  Offset  Len  Field
  *  ──────  ───  ─────────────────────────────────────────
  *       0    1  version     (Byte)
@@ -18,14 +18,16 @@ import java.nio.ByteOrder
  *      18    1  ttl         (Byte)
  *      19    1  hopCount    (Byte)
  *      20    4  timestamp   (Int / 4 bytes, Unix seconds)
- *      24    1  payloadLen  (Byte, 0-209)
- *      25   16  authTag     (16 bytes)
- *      41    *  payload     (0-209 bytes)
+ *      24    1  flags       (Byte)  bit0=LORA_ELIGIBLE, bit3=IS_GATEWAY
+ *      25    1  payloadLen  (Byte, 0-208)
+ *      26   16  authTag     (16 bytes)
+ *      42    *  payload     (0-208 bytes)
  */
 object PacketSerializer {
 
     private const val MAX_PACKET_SIZE = 250
-    const val FIXED_HEADER_SIZE = 41
+    const val FIXED_HEADER_SIZE = 42
+    const val DEFAULT_INITIAL_TTL: Byte = 6
 
     fun serialize(packet: MeshPacket): ByteArray {
         val totalSize = FIXED_HEADER_SIZE + packet.payload.size
@@ -42,6 +44,7 @@ object PacketSerializer {
         buf.put(packet.ttl)
         buf.put(packet.hopCount)
         buf.putInt(packet.timestamp)
+        buf.put(packet.flags)
         buf.put(packet.payloadLen)
         buf.put(packet.authTag)
         buf.put(packet.payload)
@@ -71,6 +74,7 @@ object PacketSerializer {
             val ttl = buf.get()
             val hopCount = buf.get()
             val timestamp = buf.int
+            val flags = buf.get()
             val payloadLen = buf.get()
             val authTag = ByteArray(16).also { buf.get(it) }
 
@@ -94,6 +98,7 @@ object PacketSerializer {
                 ttl = ttl,
                 hopCount = hopCount,
                 timestamp = timestamp,
+                flags = flags,
                 payloadLen = payloadLen,
                 authTag = authTag,
                 payload = payload

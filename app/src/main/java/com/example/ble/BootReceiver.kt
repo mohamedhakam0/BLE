@@ -10,12 +10,18 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import com.example.ble.AppLogger
+import com.example.ble.ui.OnboardingPrefs
 
 /** Broadcast receiver that restores ForegroundMeshService after system boot. */
 class BootReceiver : BroadcastReceiver() {
     /** Handles boot broadcasts and starts `ForegroundMeshService` using foreground mode on API 26+. */
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action != Intent.ACTION_BOOT_COMPLETED) return
+
+        if (!OnboardingPrefs.isDone(context)) {
+            AppLogger.d("BootReceiver", "BOOT_COMPLETED: onboarding not complete — skipping service start")
+            return
+        }
 
         AppLogger.d("BootReceiver", "BOOT_COMPLETED received, starting ForegroundMeshService")
 

@@ -16,9 +16,10 @@
  *   - ttl (1 byte): Time to live, decremented at each hop
  *   - hopCount (1 byte): Number of hops traveled
  *   - timestamp (4 bytes): Unix seconds when packet was created
- *   - payloadLen (1 byte): Length of payload (0-209 bytes)
+ *   - flags (1 byte): Bit flags (bit0=LORA_ELIGIBLE, bit3=IS_GATEWAY)
+ *   - payloadLen (1 byte): Length of payload (0-208 bytes)
  *   - authTag (16 bytes): Authentication/encryption tag
- *   - payload (0-209 bytes): Message content
+ *   - payload (0-208 bytes): Message content
  *
  * Interactions:
  * - PacketSerializer.kt: Serializes MeshPacket to ByteArray, deserializes ByteArray to MeshPacket
@@ -65,17 +66,24 @@ data class MeshPacket(
     val ttl: Byte,
     val hopCount: Byte,
     val timestamp: Int,
+    /** Flags byte (offset 24). Bit 0 = LORA_ELIGIBLE, Bit 3 = IS_GATEWAY. */
+    val flags: Byte = 0x00,
     val payloadLen: Byte,
     val authTag: ByteArray,
     val payload: ByteArray
 ) {
+    companion object {
+        const val FLAG_LORA_ELIGIBLE: Byte = 0x01
+        const val FLAG_IS_GATEWAY: Byte = 0x08.toByte()
+    }
+
     init {
         require(msgId.size == 8) { "msgId must be 8 bytes" }
         require(senderId.size == 4) { "senderId must be 4 bytes" }
         require(receiverId.size == 4) { "receiverId must be 4 bytes" }
         require(authTag.size == 16) { "authTag must be 16 bytes" }
-        require(payload.size == payloadLen.toInt()) { "payload length mismatch" }
-        require(payload.size <= 209) { "payload must be <= 209 bytes" }
+        require(payload.size == (payloadLen.toInt() and 0xFF)) { "payload length mismatch" }
+        require(payload.size <= 208) { "payload must be <= 208 bytes" }
     }
 
     override fun equals(other: Any?): Boolean {
@@ -89,6 +97,7 @@ data class MeshPacket(
             ttl == other.ttl &&
             hopCount == other.hopCount &&
             timestamp == other.timestamp &&
+            flags == other.flags &&
             payloadLen == other.payloadLen &&
             authTag.contentEquals(other.authTag) &&
             payload.contentEquals(other.payload)
@@ -103,6 +112,7 @@ data class MeshPacket(
         result = 31 * result + ttl
         result = 31 * result + hopCount
         result = 31 * result + timestamp
+        result = 31 * result + flags
         result = 31 * result + payloadLen
         result = 31 * result + Arrays.hashCode(authTag)
         result = 31 * result + Arrays.hashCode(payload)

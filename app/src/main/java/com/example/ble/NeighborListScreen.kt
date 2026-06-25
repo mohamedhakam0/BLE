@@ -18,6 +18,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Router
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -44,6 +47,7 @@ import com.example.ble.ui.theme.NodeGreenDim
 import com.example.ble.ui.theme.NodeAmber
 import com.example.ble.ui.theme.NodeAmberDim
 import com.example.ble.ui.theme.NodePurple
+import com.example.ble.ui.theme.NodePurpleDim
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -54,6 +58,7 @@ fun NeighborListScreen(contactRepository: ContactRepository? = null) {
     val directNeighbors = neighbors.filter { it.hopCount == 0 }
     val directCount = directNeighbors.size
     val extendedCount = neighbors.size - directCount
+    val gatewayCount = directNeighbors.count { it.nodeType == NodeType.GATEWAY }
 
     val contactsFlow = remember(contactRepository) { contactRepository?.observeContactsWithLastMessage() }
     val contacts by contactsFlow?.collectAsState(initial = emptyList()) ?: remember { androidx.compose.runtime.mutableStateOf(emptyList()) }
@@ -90,8 +95,12 @@ fun NeighborListScreen(contactRepository: ContactRepository? = null) {
                     1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
                 )
             ) {
+                val pillText = if (gatewayCount > 0)
+                    "${neighbors.size} nodes  •  $gatewayCount GW"
+                else
+                    "${neighbors.size} nodes"
                 Text(
-                    "${neighbors.size} nodes",
+                    pillText,
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
@@ -103,6 +112,34 @@ fun NeighborListScreen(contactRepository: ContactRepository? = null) {
         // Mesh visualization canvas
         MeshCanvas(directNeighbors = directNeighbors)
 
+        // LoRa gateway banner (shown only when a gateway is visible)
+        if (gatewayCount > 0) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 2.dp)
+                    .background(NodePurpleDim, RoundedCornerShape(10.dp))
+                    .border(1.dp, NodePurple.copy(alpha = 0.3f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Router,
+                    contentDescription = null,
+                    tint = NodePurple,
+                    modifier = Modifier.size(15.dp)
+                )
+                Text(
+                    "LoRa extended reach active — messages can cross to remote clusters",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = NodePurple
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+        }
+
         // Legend
         Row(
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
@@ -110,6 +147,8 @@ fun NeighborListScreen(contactRepository: ContactRepository? = null) {
         ) {
             LegendItem(color = Accent, label = "this device")
             LegendItem(color = NodeGreen, label = "ble peer")
+            LegendItem(color = NodeAmber, label = "relay")
+            LegendItem(color = NodePurple, label = "lora gw")
         }
 
         // Stats row
@@ -122,6 +161,7 @@ fun NeighborListScreen(contactRepository: ContactRepository? = null) {
             StatCard(value = "$directCount", label = "DIRECT", valueColor = NodeGreen, modifier = Modifier.weight(1f))
             StatCard(value = "$extendedCount", label = "EXTENDED", valueColor = NodeAmber, modifier = Modifier.weight(1f))
             StatCard(value = "${neighbors.size}", label = "TOTAL", valueColor = Accent, modifier = Modifier.weight(1f))
+            StatCard(value = "$gatewayCount", label = "LORA GW", valueColor = NodePurple, modifier = Modifier.weight(1f))
         }
 
         Spacer(Modifier.height(8.dp))
@@ -160,6 +200,7 @@ fun NeighborListScreen(contactRepository: ContactRepository? = null) {
 private fun MeshCanvas(directNeighbors: List<NeighborEntry>) {
     val accentColor = Accent
     val greenColor = NodeGreen
+    val amberColor = NodeAmber
     val surfaceColor = MaterialTheme.colorScheme.surface
     val outlineColor = MaterialTheme.colorScheme.outline
     val textColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
@@ -209,9 +250,16 @@ private fun MeshCanvas(directNeighbors: List<NeighborEntry>) {
                 val ny = centerY + (sin(angle) * dist).toFloat()
                 nodePositions.add(Offset(nx, ny))
 
+                val nodeType = directNeighbors[i].nodeType
+                val lineColor = when (nodeType) {
+                    NodeType.GATEWAY   -> NodePurple
+                    NodeType.ESP32_RELAY -> amberColor
+                    else               -> greenColor
+                }
+
                 // Connection line
                 drawLine(
-                    color = greenColor.copy(alpha = 0.15f),
+                    color = lineColor.copy(alpha = 0.15f),
                     start = Offset(centerX, centerY),
                     end = Offset(nx, ny),
                     strokeWidth = 1.2f,
@@ -237,20 +285,25 @@ private fun MeshCanvas(directNeighbors: List<NeighborEntry>) {
                 style = Stroke(width = 2f)
             )
 
-            // Draw neighbor nodes
+            // Draw neighbor nodes — purple for gateways, amber for relays, green for phones
             nodePositions.forEachIndexed { i, pos ->
+                val nodeColor = when (directNeighbors[i].nodeType) {
+                    NodeType.GATEWAY    -> NodePurple
+                    NodeType.ESP32_RELAY -> amberColor
+                    else                -> greenColor
+                }
                 drawCircle(
-                    color = greenColor.copy(alpha = 0.12f),
+                    color = nodeColor.copy(alpha = 0.12f),
                     radius = 12f,
                     center = pos
                 )
                 drawCircle(
-                    color = greenColor,
+                    color = nodeColor,
                     radius = 7f,
                     center = pos
                 )
                 drawCircle(
-                    color = greenColor,
+                    color = nodeColor,
                     radius = 10f,
                     center = pos,
                     style = Stroke(width = 1.5f)
@@ -323,43 +376,80 @@ private fun NeighborRow(
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-            // Always render a deterministic gradient avatar.
-            // ContactAvatarCircle falls back to nodeId bytes when publicKeyB64 is blank,
-            // so unknown (not-yet-trusted) peers still get a stable, distinct avatar.
-            ContactAvatarCircle(
-                senderIdHex = entry.nodeId.lowercase(),
-                publicKeyB64 = publicKeyB64,
-                size = 32.dp
-            )
+            val isRelay = entry.nodeType == NodeType.ESP32_RELAY
+            val isGateway = entry.nodeType == NodeType.GATEWAY
+            when {
+                isGateway -> Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .background(NodePurpleDim, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.Router,
+                        contentDescription = "LoRa gateway",
+                        tint = NodePurple,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                isRelay -> Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .background(NodeAmberDim, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.Router,
+                        contentDescription = "Relay node",
+                        tint = NodeAmber,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                else -> ContactAvatarCircle(
+                    senderIdHex = entry.nodeId.lowercase(),
+                    publicKeyB64 = publicKeyB64,
+                    size = 32.dp
+                )
+            }
             Spacer(Modifier.width(10.dp))
             Column {
-                if (contactName != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val displayName = when {
+                        isGateway -> "LoRa Gateway"
+                        isRelay -> "ESP32 Relay"
+                        contactName != null -> contactName
+                        else -> "${entry.nodeId.take(8)}..."
+                    }
                     Text(
-                        contactName,
+                        displayName,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = when {
+                            isGateway -> NodePurple
+                            isRelay   -> NodeAmber
+                            else      -> MaterialTheme.colorScheme.onSurface
+                        }
                     )
-                    Text(
-                        "${entry.nodeId.take(8)}...",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
-                    )
-                } else {
-                    Text(
-                        "${entry.nodeId.take(8)}...",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
+                    if (!isRelay && !isGateway && contactName != null) {
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "${entry.nodeId.take(8)}...",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
+                        )
+                    }
                 }
                 Text(
                     text = if (entry.hopCount == 0) "direct · ${secondsAgo(entry.lastSeen)}s ago"
                     else "${entry.hopCount} hops · via ${(entry.seenVia ?: "?").take(6)}",
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                    color = when {
+                        isGateway -> NodePurple.copy(alpha = 0.6f)
+                        isRelay   -> NodeAmber.copy(alpha = 0.6f)
+                        else      -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                    }
                 )
             }
         }

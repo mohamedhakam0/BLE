@@ -16,6 +16,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -71,6 +72,10 @@ class ForegroundMeshService : Service() {
         @Volatile private var lastServiceCreatedAt: Long = 0L
         @Volatile private var lastScanEventAt: Long = System.currentTimeMillis()
 
+        /** When true, hop-0 CHAT packets are skipped before the dedup cache so the
+         *  LoRa relay (hop>0) is the first version to hit the cache and get delivered. */
+        @Volatile var loraOnlyRxMode: Boolean = false
+
         fun start(context: Context) {
             val intent = Intent(context, ForegroundMeshService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
@@ -109,6 +114,15 @@ class ForegroundMeshService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val contactNicknameCache: MutableMap<String, String> = java.util.concurrent.ConcurrentHashMap()
     private var scanWakeLock: PowerManager.WakeLock? = null
+
+    // Relay toggle — kept live by the listener below so changes take effect on the next packet.
+    @Volatile private var relayEnabled = true
+    private val relayPrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
+        if (key == MeshSettingsViewModel.KEY_RELAY_MODE) {
+            relayEnabled = prefs.getBoolean(key, true)
+            AppLogger.d(DIAG_TAG, "relayEnabled → $relayEnabled")
+        }
+    }
 
     // Detect screen-on/user-present transitions (Samsung background scan resets).
     private val scanResumeReceiver: BroadcastReceiver = object : BroadcastReceiver() {
@@ -176,6 +190,11 @@ class ForegroundMeshService : Service() {
         NeighborTable.clear()
         NeighborTable.setSelfNodeId(myNodeIdHex)
 
+        getSharedPreferences(MeshSettingsViewModel.PREFS_NAME, MODE_PRIVATE).also { prefs ->
+            relayEnabled = prefs.getBoolean(MeshSettingsViewModel.KEY_RELAY_MODE, true)
+            prefs.registerOnSharedPreferenceChangeListener(relayPrefsListener)
+        }
+
         runCatching {
             ContextCompat.registerReceiver(
                 this,
@@ -219,6 +238,17 @@ class ForegroundMeshService : Service() {
                 }
             }
 
+            // In LoRa-only RX mode: drop direct (hop-0) CHAT packets without touching the
+            // dedup cache, so the LoRa relay copy (hop>0) is the first to enter the cache
+            // and actually get delivered.
+            if (loraOnlyRxMode
+                && packet.type == PacketType.CHAT
+                && (packet.hopCount.toInt() and 0xFF) == 0
+            ) {
+                Log.d(DIAG_TAG, "LORA_ONLY_RX: skip direct hop-0 CHAT ${packet.msgId.toHex()}")
+                return@BleScanner
+            }
+
             val msgIdLong = runCatching { packet.msgId.toLongBE() }.getOrNull()
             if (msgIdLong != null && packetCache.isDuplicate(msgIdLong)) {
                 Log.v("MeshService", "DEDUP drop msgId=${packet.msgId.toHex()}")
@@ -228,9 +258,6 @@ class ForegroundMeshService : Service() {
             val isForMe = packet.receiverId.contentEquals(localSenderId)
             val isBroadcast = packet.receiverId.all { it == 0xFF.toByte() }
             val ttl = packet.ttl.toInt() and 0xFF
-            // Settings opt-out: "Act as Relay" toggle (single preference read at the relay gate).
-            val relayEnabled = getSharedPreferences(MeshSettingsViewModel.PREFS_NAME, MODE_PRIVATE)
-                .getBoolean(MeshSettingsViewModel.KEY_RELAY_MODE, true)
             val shouldRelay = relayEnabled && ttl > 0 && !packet.receiverId.contentEquals(localSenderId)
             if (shouldRelay) {
                 if (packet.type == PacketType.ACK) return@BleScanner  // never relay ACKs at the originating node
@@ -275,6 +302,13 @@ class ForegroundMeshService : Service() {
                   if (senderId == myNodeIdHex) return@BleScanner
 
                  updatePeer(senderId, packet.hopCount.toInt())
+                // Gateways signal via FLAG_IS_GATEWAY in the header flags byte
+                // (their payload is empty). Phones carry the type in the payload trailing byte.
+                val senderNodeType = if ((packet.flags.toInt() and MeshPacket.FLAG_IS_GATEWAY.toInt()) != 0) {
+                    NodeType.GATEWAY
+                } else {
+                    parseSenderNodeType(packet.payload)
+                }
                 // Direct neighbor from scan RSSI (hop 0).
                 NeighborTable.upsert(
                      NeighborEntry(
@@ -282,7 +316,8 @@ class ForegroundMeshService : Service() {
                          rssi = rssi,
                          lastSeen = now,
                          hopCount = 0,
-                         seenVia = null
+                         seenVia = null,
+                         nodeType = senderNodeType
                      )
                  )
 
@@ -292,7 +327,7 @@ class ForegroundMeshService : Service() {
                     NeighborTable.upsertAll(filtered)
                 }
 
-                AppLogger.log("HELLO", "Neighbor: $senderId RSSI=${rssi} dBm, extended=${filtered.size} entries")
+                AppLogger.log("HELLO", "Neighbor: $senderId RSSI=${rssi} dBm type=${senderNodeType.name} extended=${filtered.size} entries")
                 return@BleScanner
             }
 
@@ -403,7 +438,7 @@ class ForegroundMeshService : Service() {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             scanWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PeerReach:ScanWakeLock").apply {
                 setReferenceCounted(false)
-                acquire()
+                acquire(30 * 60 * 1000L) // 30-min ceiling; re-acquired on each onStartCommand delivery
             }
             AppLogger.d(DIAG_TAG, "ScanWakeLock acquired")
         }
@@ -422,6 +457,10 @@ class ForegroundMeshService : Service() {
         } catch (_: Exception) {
         } finally {
             scanWakeLock = null
+        }
+        runCatching {
+            getSharedPreferences(MeshSettingsViewModel.PREFS_NAME, MODE_PRIVATE)
+                .unregisterOnSharedPreferenceChangeListener(relayPrefsListener)
         }
         runCatching { unregisterReceiver(quitReceiver) }
         runCatching { unregisterReceiver(scanResumeReceiver) }
@@ -531,6 +570,14 @@ class ForegroundMeshService : Service() {
         } else {
             AppLogger.d(DIAG_TAG, "ensureScannerRunning($reason): scanner already running")
         }
+    }
+
+    private fun parseSenderNodeType(payload: ByteArray): NodeType {
+        if (payload.isEmpty()) return NodeType.PHONE
+        val count = (payload[0].toInt() and 0xFF).coerceAtMost(20)
+        val entriesEnd = 1 + count * 5
+        return if (payload.size > entriesEnd) NodeType.fromWire(payload[entriesEnd])
+        else NodeType.PHONE
     }
 
     private fun parseHelloPayload(payload: ByteArray, senderNodeId: String): List<NeighborEntry> {

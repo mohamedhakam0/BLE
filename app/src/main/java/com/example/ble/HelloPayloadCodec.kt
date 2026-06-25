@@ -13,9 +13,10 @@ object HelloPayloadCodec {
             .take(MAX_ENTRIES)
             .toList()
 
-        if (top.isEmpty()) return byteArrayOf(0)
+        // Always append node-type byte (0x00 = phone) so receivers can identify us.
+        if (top.isEmpty()) return byteArrayOf(0, NodeType.PHONE.wire)
 
-        val out = ByteArray(1 + top.size * ENTRY_BYTES)
+        val out = ByteArray(1 + top.size * ENTRY_BYTES + 1)  // +1 for trailing nodeType
         out[0] = top.size.toByte()
 
         var offset = 1
@@ -26,7 +27,18 @@ object HelloPayloadCodec {
             offset += ENTRY_BYTES
         }
 
-        return if (offset == out.size) out else out.copyOf(offset).also { it[0] = ((offset - 1) / ENTRY_BYTES).toByte() }
+        val actualCount = (offset - 1) / ENTRY_BYTES
+        return if (actualCount == top.size) {
+            out[out.size - 1] = NodeType.PHONE.wire
+            out
+        } else {
+            // Some entries had invalid hex IDs — resize and fix count.
+            val trimmed = ByteArray(offset + 1)
+            System.arraycopy(out, 0, trimmed, 0, offset)
+            trimmed[0] = actualCount.toByte()
+            trimmed[offset] = NodeType.PHONE.wire
+            trimmed
+        }
     }
 
     fun decode(payload: ByteArray, seenVia: String, now: Long = System.currentTimeMillis()): List<NeighborEntry> {

@@ -58,32 +58,40 @@ class NodeIdentity(private val context: Context) {
         }
 
         /** Opens (or re-uses the cached) EncryptedSharedPreferences for the secure store. */
-        private fun openSecurePrefs(context: Context): android.content.SharedPreferences {
-            val masterKey = MasterKey.Builder(context.applicationContext)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            return EncryptedSharedPreferences.create(
-                context.applicationContext,
-                SECURE_PREFS_NAME,
-                masterKey,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-            )
+        private fun openSecurePrefs(context: Context): android.content.SharedPreferences =
+            openOrRecreateEncryptedPrefs(context.applicationContext)
+
+        /**
+         * Creates EncryptedSharedPreferences backed by an Android Keystore master key.
+         * If the stored Tink keyset can no longer be decrypted (e.g. after app reinstall
+         * the Keystore key is invalidated), the corrupted prefs file is deleted and a
+         * fresh empty store is returned — the caller will regenerate identity keys on the
+         * next write.
+         */
+        internal fun openOrRecreateEncryptedPrefs(ctx: Context): SharedPreferences {
+            fun create(): SharedPreferences {
+                val masterKey = MasterKey.Builder(ctx)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+                return EncryptedSharedPreferences.create(
+                    ctx, SECURE_PREFS_NAME, masterKey,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                )
+            }
+            return try {
+                create()
+            } catch (_: Exception) {
+                // Keystore key invalidated — wipe the encrypted prefs and start fresh.
+                AppLogger.w("NodeIdentity", "Keystore key invalidated; wiping identity prefs and regenerating")
+                ctx.deleteSharedPreferences(SECURE_PREFS_NAME)
+                create()
+            }
         }
     }
 
     private val securePrefs: SharedPreferences by lazy {
-        val masterKey = MasterKey.Builder(context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-
-        EncryptedSharedPreferences.create(
-            context,
-            SECURE_PREFS_NAME,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
+        openOrRecreateEncryptedPrefs(context.applicationContext)
     }
 
     private val profilePrefs: SharedPreferences by lazy {
@@ -130,6 +138,19 @@ class NodeIdentity(private val context: Context) {
 
     /** Returns the stored nickname, or null if not set. */
     fun getNickname(): String? = profilePrefs.getString(KEY_NICKNAME, null)
+
+    /**
+     * Erases the stored keypair and nickname so the next call to [getOrCreateIdentity]
+     * generates a brand-new identity. Call [OnboardingPrefs.reset] alongside this
+     * so the onboarding flow re-runs on the next launch.
+     */
+    fun resetIdentity() {
+        securePrefs.edit()
+            .remove(KEY_PUBLIC).remove(KEY_PRIVATE).remove(KEY_SENDER_ID)
+            .remove(KEY_LOCAL_AVATAR)
+            .apply()
+        profilePrefs.edit().remove(KEY_NICKNAME).apply()
+    }
 
     /** Derives 4-byte senderId from SHA-256(publicKey). */
     private fun deriveSenderId(publicKey: ByteArray): ByteArray {

@@ -11,7 +11,8 @@ data class NeighborEntry(
     val rssi: Int,
     val lastSeen: Long,
     val hopCount: Int,
-    val seenVia: String? = null
+    val seenVia: String? = null,
+    val nodeType: NodeType = NodeType.PHONE
 )
 
 /** In-memory neighbor table; direct observations always win over relayed entries. */
@@ -99,12 +100,23 @@ object NeighborTable {
         if (changed) emitSnapshot()
     }
 
+    /**
+     * Returns the table entry for [nodeId], or null if the node is not currently known.
+     * Both direct (hopCount=0) and extended/piggybacked (hopCount=1) entries are returned;
+     * callers can inspect [NeighborEntry.hopCount] to distinguish the two cases.
+     */
+    fun lookup(nodeId: String): NeighborEntry? = table[nodeId.trim().lowercase()]
+
     fun getDirectNeighbors(): List<NeighborEntry> =
         table.values
             .asSequence()
             .filter { it.hopCount == 0 }
             .sortedByDescending { it.rssi }
             .toList()
+
+    /** Returns true if at least one direct (hop-0) neighbor is a LoRa-capable gateway. */
+    fun hasGatewayNeighbor(): Boolean =
+        table.values.any { it.hopCount == 0 && it.nodeType == NodeType.GATEWAY }
 
     private fun emitSnapshot() {
         _neighbors.value = table.values.sortedWith(

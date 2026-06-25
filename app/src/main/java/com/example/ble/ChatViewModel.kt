@@ -13,11 +13,25 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.random.Random
+
+/**
+ * One-shot routing outcome emitted by [ChatViewModel] for each outgoing user message.
+ *
+ * [LoraRequired] fires when the recipient's node ID is not found in [NeighborTable] as either
+ * a direct (hop-0) or extended/piggybacked (hop-1) neighbor, meaning the device is outside the
+ * current BLE cluster and the message would need LoRa to reach them.
+ */
+sealed interface RouteEvent {
+    data class LoraRequired(val recipientHex: String) : RouteEvent
+}
 
 val FIXED_EMOJIS = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
 private const val EMOJI_INDEX_CUSTOM = 0xFF
@@ -32,6 +46,10 @@ class ChatViewModel(
     private val contactSenderIdHex: String,
     private val contactPublicKeyB64: String = ""
 ) : AndroidViewModel(app) {
+
+    // Emits one event per outgoing message that could not be routed via BLE.
+    private val _routeEvents = MutableSharedFlow<RouteEvent>(extraBufferCapacity = 8)
+    val routeEvents: SharedFlow<RouteEvent> = _routeEvents.asSharedFlow()
 
     private val sessionCrypto: Pair<ByteArray, ByteArray>? by lazy {
         if (contactPublicKeyB64.isBlank()) return@lazy null
@@ -191,15 +209,22 @@ class ChatViewModel(
                 val expectedSender = contactSenderIdHex.trim().lowercase()
                 if (incomingSender != expectedSender) return
 
-                val payload = packet.payload
-                if (payload.size < 9) return
+                val (aesKey, nonceBase) = sessionCrypto ?: return  // no key exchange → drop
 
-                val targetMsgIdLong = payload.copyOfRange(0, 8).toLongBE()
-                val emojiIndex = payload[8].toInt() and 0xFF
+                val packetMsgIdLong = packet.msgId.toLongBE()
+                val plainPayload = try {
+                    val aad = CryptoManager.buildAad(packet)
+                    CryptoManager.decrypt(aesKey, nonceBase, packetMsgIdLong, packet.payload, packet.authTag, aad)
+                } catch (_: Exception) { null } ?: return
+
+                if (plainPayload.size < 9) return
+
+                val targetMsgIdLong = plainPayload.copyOfRange(0, 8).toLongBE()
+                val emojiIndex = plainPayload[8].toInt() and 0xFF
                 val emoji = when {
                     emojiIndex < FIXED_EMOJIS.size -> FIXED_EMOJIS[emojiIndex]
-                    emojiIndex == EMOJI_INDEX_CUSTOM && payload.size > 9 ->
-                        payload.copyOfRange(9, payload.size).decodeToString()
+                    emojiIndex == EMOJI_INDEX_CUSTOM && plainPayload.size > 9 ->
+                        plainPayload.copyOfRange(9, plainPayload.size).decodeToString()
                     else -> return
                 }
 
@@ -233,39 +258,23 @@ class ChatViewModel(
                 val expectedSender = contactSenderIdHex.trim().lowercase()
                 if (incomingSender != expectedSender) return
 
+                val (aesKey, nonceBase) = sessionCrypto ?: return  // no key exchange → drop
+
                 val packetMsgIdLong = packet.msgId.toLongBE()
-                val payloadBytes = sessionCrypto?.let { (aesKey, nonceBase) ->
-                    try {
-                        val aad = CryptoManager.buildAad(packet)
-                        CryptoManager.decrypt(aesKey, nonceBase, packetMsgIdLong, packet.payload, packet.authTag, aad)
-                    } catch (_: Exception) { null }
-                } ?: packet.payload
+                val payloadBytes = try {
+                    val aad = CryptoManager.buildAad(packet)
+                    CryptoManager.decrypt(aesKey, nonceBase, packetMsgIdLong, packet.payload, packet.authTag, aad)
+                } catch (_: Exception) { null } ?: return
 
                 if (payloadBytes.size < 8) return
                 val targetMsgIdLong = payloadBytes.copyOfRange(0, 8).toLongBE()
 
                 viewModelScope.launch(Dispatchers.IO) {
-                    val now = System.currentTimeMillis()
                     val existing = messageRepository.getById(targetMsgIdLong)
-                    if (existing != null) {
-                        messageRepository.softDeleteForEveryone(targetMsgIdLong, now)
-                    } else {
-                        // Insert tombstone so a delayed CHAT packet is suppressed on arrival
-                        messageRepository.insertTombstone(
-                            MessageEntity(
-                                msgId              = targetMsgIdLong,
-                                contactId          = contactId,
-                                text               = "",
-                                direction          = MessageDirection.INCOMING,
-                                status             = MessageStatus.DELIVERED,
-                                timestamp          = now,
-                                insertedAt         = now,
-                                deleted            = true,
-                                deletedForEveryone = true,
-                                deletedAt          = now
-                            )
-                        )
-                    }
+                    // Only the sender of a message may delete it. Reject if the targeted
+                    // message was sent by us (OUTGOING), or hasn't arrived yet (null).
+                    if (existing?.direction != MessageDirection.INCOMING) return@launch
+                    messageRepository.softDeleteForEveryone(targetMsgIdLong, System.currentTimeMillis())
                 }
             }
 
@@ -297,6 +306,13 @@ class ChatViewModel(
         }
     }
 
+    private fun currentTtl(): Byte =
+        getApplication<Application>()
+            .getSharedPreferences(MeshSettingsViewModel.PREFS_NAME, Context.MODE_PRIVATE)
+            .getInt(MeshSettingsViewModel.KEY_TTL, 6)
+            .coerceIn(2, 7)
+            .toByte()
+
     private fun isAppInForeground(): Boolean {
         val app = getApplication<Application>()
         val am = app.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
@@ -314,7 +330,7 @@ class ChatViewModel(
         super.onCleared()
     }
 
-    fun sendMessage(text: String) {
+    fun sendMessage(text: String, forceLoraEligible: Boolean = false) {
         val cleaned = text.trim()
         if (cleaned.isEmpty()) return
 
@@ -324,16 +340,19 @@ class ChatViewModel(
         val msgIdLong  = msgIdBytes.toLongBE()
 
         val plainBytes = cleaned.encodeToByteArray()
-        if (plainBytes.size > 209) return
+        if (plainBytes.size > 208) return
+
+        val loraFlags = if (forceLoraEligible) MeshPacket.FLAG_LORA_ELIGIBLE else 0x00.toByte()
 
         val skeleton = MeshPacket(
             type       = PacketType.CHAT,
             msgId      = msgIdBytes,
             senderId   = me,
             receiverId = receiverId,
-            ttl        = 6.toByte(),
+            ttl        = currentTtl(),
             hopCount   = 0.toByte(),
             timestamp  = (System.currentTimeMillis() / 1000L).toInt(),
+            flags      = loraFlags,
             payloadLen = plainBytes.size.toByte(),
             authTag    = ByteArray(16),
             payload    = plainBytes
@@ -347,16 +366,17 @@ class ChatViewModel(
             } catch (_: Exception) { null }
         } ?: Pair(plainBytes, Random.nextBytes(16))
 
-        if (payload.size > 209) return
+        if (payload.size > 208) return
 
         val packet = MeshPacket(
             type       = PacketType.CHAT,
             msgId      = msgIdBytes,
             senderId   = me,
             receiverId = receiverId,
-            ttl        = 6.toByte(),
+            ttl        = currentTtl(),
             hopCount   = 0.toByte(),
             timestamp  = skeleton.timestamp,
+            flags      = loraFlags,
             payloadLen = payload.size.toByte(),
             authTag    = authTag,
             payload    = payload
@@ -376,10 +396,40 @@ class ChatViewModel(
             )
         }
 
-        advertiser.enqueue(packet)
+        // Routing decision: consult the neighbor table to determine whether the recipient
+        // is reachable within the local BLE cluster.
+        //
+        // • hopCount == 0  →  direct neighbor seen over BLE
+        // • hopCount == 1  →  extended neighbor discovered via a piggybacked HELLO
+        // Both cases are treated as BLE-local; LoRa bridges remote clusters.
+        val recipientHex = contactSenderIdHex.trim().lowercase()
+        val neighbor = NeighborTable.lookup(recipientHex)
+        val hasGateway = NeighborTable.hasGatewayNeighbor()
+        when {
+            neighbor != null -> {
+                AppLogger.d("Route", "CHAT → BLE dst=$recipientHex hopCount=${neighbor.hopCount}")
+                advertiser.enqueue(packet)
+            }
+            hasGateway -> {
+                // Recipient is outside the local BLE cluster but a LoRa gateway is visible.
+                // Set LORA_ELIGIBLE so the gateway forwards this packet over the LoRa link.
+                val loraPacket = packet.copy(flags = MeshPacket.FLAG_LORA_ELIGIBLE)
+                AppLogger.i("Route", "CHAT → LoRa via gateway dst=$recipientHex")
+                advertiser.enqueue(loraPacket)
+            }
+            else -> {
+                AppLogger.i(
+                    "Route",
+                    "Recipient $recipientHex not in BLE cluster and no gateway visible"
+                )
+                _routeEvents.tryEmit(RouteEvent.LoraRequired(recipientHex))
+            }
+        }
     }
 
     fun sendReaction(targetMsgIdHex: String, emoji: String) {
+        val (aesKey, nonceBase) = sessionCrypto ?: return  // no key exchange → don't send
+
         val me = nodeIdentity.getOrCreateIdentity().senderId
         val receiverId = try { contactSenderIdHex.hexToByteArray4() } catch (_: Exception) { return }
 
@@ -387,26 +437,42 @@ class ChatViewModel(
         val targetMsgIdBytes = targetMsgIdLong.to8BytesBE()
 
         val emojiIndex = FIXED_EMOJIS.indexOf(emoji)
-        val payload = if (emojiIndex >= 0) {
+        val plainPayload = if (emojiIndex >= 0) {
             targetMsgIdBytes + byteArrayOf(emojiIndex.toByte())
         } else {
             val emojiBytes = emoji.encodeToByteArray().take(4).toByteArray()
             targetMsgIdBytes + byteArrayOf(EMOJI_INDEX_CUSTOM.toByte()) + emojiBytes
         }
 
-        if (payload.size > 209) return
+        if (plainPayload.size > 208) return
 
-        val packet = MeshPacket(
+        val msgIdBytes = Random.nextBytes(8)
+        val msgIdLong  = msgIdBytes.toLongBE()
+
+        val skeleton = MeshPacket(
             type       = PacketType.REACTION,
-            msgId      = Random.nextBytes(8),
+            msgId      = msgIdBytes,
             senderId   = me,
             receiverId = receiverId,
-            ttl        = 6.toByte(),
+            ttl        = currentTtl(),
             hopCount   = 0.toByte(),
             timestamp  = (System.currentTimeMillis() / 1000L).toInt(),
-            payloadLen = payload.size.toByte(),
+            payloadLen = plainPayload.size.toByte(),
             authTag    = ByteArray(16),
-            payload    = payload
+            payload    = plainPayload
+        )
+
+        val encrypted = try {
+            val aad = CryptoManager.buildAad(skeleton)
+            CryptoManager.encrypt(aesKey, nonceBase, msgIdLong, plainPayload, aad)
+        } catch (_: Exception) { return }
+
+        if (encrypted.ciphertext.size > 208) return
+
+        val packet = skeleton.copy(
+            payloadLen = encrypted.ciphertext.size.toByte(),
+            authTag    = encrypted.authTag,
+            payload    = encrypted.ciphertext
         )
 
         advertiser.enqueue(packet)
@@ -459,7 +525,7 @@ class ChatViewModel(
                 msgId      = packetMsgIdBytes,
                 senderId   = me,
                 receiverId = receiverId,
-                ttl        = 6.toByte(),
+                ttl        = currentTtl(),
                 hopCount   = 0.toByte(),
                 timestamp  = (now / 1000L).toInt(),
                 payloadLen = targetMsgIdBytes.size.toByte(),
@@ -467,15 +533,14 @@ class ChatViewModel(
                 payload    = targetMsgIdBytes
             )
 
-            val (payload, authTag) = sessionCrypto?.let { (aesKey, nonceBase) ->
-                try {
-                    val aad = CryptoManager.buildAad(skeleton)
-                    val result = CryptoManager.encrypt(aesKey, nonceBase, packetMsgIdLong, targetMsgIdBytes, aad)
-                    Pair(result.ciphertext, result.authTag)
-                } catch (_: Exception) { null }
-            } ?: Pair(targetMsgIdBytes, Random.nextBytes(16))
+            val (aesKey, nonceBase) = sessionCrypto ?: return@launch  // no key exchange → don't send
+            val (payload, authTag) = try {
+                val aad = CryptoManager.buildAad(skeleton)
+                val result = CryptoManager.encrypt(aesKey, nonceBase, packetMsgIdLong, targetMsgIdBytes, aad)
+                Pair(result.ciphertext, result.authTag)
+            } catch (_: Exception) { return@launch }
 
-            if (payload.size > 209) return@launch
+            if (payload.size > 208) return@launch
 
             val packet = skeleton.copy(
                 payloadLen = payload.size.toByte(),
@@ -504,7 +569,7 @@ class ChatViewModel(
         val msgIdBytes = Random.nextBytes(8)
         val msgIdLong  = msgIdBytes.toLongBE()
         val plainBytes = text.encodeToByteArray()
-        if (plainBytes.size > 209) return
+        if (plainBytes.size > 208) return
 
         // Compute session crypto for target contact
         val targetCrypto: Pair<ByteArray, ByteArray>? = if (targetContact.publicKey.isNotBlank()) {
@@ -528,7 +593,7 @@ class ChatViewModel(
             msgId      = msgIdBytes,
             senderId   = me,
             receiverId = receiverId,
-            ttl        = 6.toByte(),
+            ttl        = currentTtl(),
             hopCount   = 0.toByte(),
             timestamp  = (System.currentTimeMillis() / 1000L).toInt(),
             payloadLen = plainBytes.size.toByte(),
@@ -544,14 +609,14 @@ class ChatViewModel(
             } catch (_: Exception) { null }
         } ?: Pair(plainBytes, Random.nextBytes(16))
 
-        if (payload.size > 209) return
+        if (payload.size > 208) return
 
         val packet = MeshPacket(
             type       = PacketType.CHAT,
             msgId      = msgIdBytes,
             senderId   = me,
             receiverId = receiverId,
-            ttl        = 6.toByte(),
+            ttl        = currentTtl(),
             hopCount   = 0.toByte(),
             timestamp  = skeleton.timestamp,
             payloadLen = payload.size.toByte(),

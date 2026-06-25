@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 @DebugOnly
@@ -43,16 +44,33 @@ class StressTestViewModel(
 
     init {
         viewModelScope.launch {
-            val loaded = contactRepository.getAllContacts()
-            _contacts.value = loaded.map { c ->
-                StressContact(
-                    displayName = c.nickname.ifBlank { c.senderId.take(8) },
-                    contactId = c.senderId,
-                    senderIdHex = c.senderId
-                )
-            }
-            if (_contacts.value.isNotEmpty()) {
-                _selectedContact.value = _contacts.value.first()
+            contactRepository.observeContactsWithLastMessage().collectLatest { rows ->
+                // Detect duplicate base names so we can disambiguate them.
+                val nameCounts = rows.groupingBy { it.nickname.trim().ifBlank { it.senderId.take(8) } }.eachCount()
+
+                val mapped = rows.map { row ->
+                    val baseName = row.nickname.trim().ifBlank { row.senderId.take(8) }
+                    // Append last 4 hex chars of senderId when two contacts share a display name.
+                    val displayName = if ((nameCounts[baseName] ?: 0) > 1)
+                        "$baseName (…${row.senderId.takeLast(4)})"
+                    else baseName
+                    StressContact(
+                        displayName = displayName,
+                        contactId = row.senderId,
+                        senderIdHex = row.senderId
+                    )
+                }
+
+                _contacts.value = mapped
+
+                // Keep the current selection if the contact still exists; otherwise reset.
+                val currentId = _selectedContact.value?.contactId
+                _selectedContact.value = when {
+                    currentId != null && mapped.any { it.contactId == currentId } ->
+                        mapped.first { it.contactId == currentId }
+                    mapped.isNotEmpty() -> mapped.first()
+                    else -> null
+                }
             }
         }
     }

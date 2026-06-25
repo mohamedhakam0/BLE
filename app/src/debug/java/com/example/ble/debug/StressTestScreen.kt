@@ -12,6 +12,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -29,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -52,6 +54,7 @@ import kotlinx.coroutines.launch
 fun StressTestScreen(
     viewModel: StressTestViewModel,
     onBack: () -> Unit,
+    onShowLogs: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val isRunning by viewModel.isRunning.collectAsState()
@@ -82,10 +85,15 @@ fun StressTestScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("BLE Stress Test") },
+                title = { Text("Diagnostics") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = onShowLogs) {
+                        Icon(Icons.AutoMirrored.Filled.Article, contentDescription = "View Logs")
                     }
                 }
             )

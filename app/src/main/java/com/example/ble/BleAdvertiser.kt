@@ -417,11 +417,35 @@ private class BleAdvertiserApi26(bluetoothAdapter: BluetoothAdapter?) {
                     if (packet.type == PacketType.LEAVE || forceUrgent) urgentQueue.addFirst(job)
                     else urgentQueue.addLast(job)
                     Log.i("BLE", "Advertiser.enqueue(): URGENT(${packet.type}) msgId=$msgIdPreview")
+
+                    // Preempt any active BACKGROUND job (HELLO beacon, relay) so ACKs
+                    // and LEAVEs start immediately instead of waiting up to 600ms for the
+                    // beacon window to expire, then another 900ms for the TDM scan gap.
+                    // Without this, ACK transmission can be delayed by 1.5s, causing it
+                    // to miss the original sender's 900ms scan window entirely.
+                    if (isAdvertising && currentTier == QueueTier.BACKGROUND) {
+                        AppLogger.d(DIAG_TAG, "Advertiser: preempting BACKGROUND for URGENT(${packet.type}) msgId=$msgIdPreview")
+                        currentAttemptStop = null   // discard BACKGROUND cleanup; HELLO will be resent on schedule
+                        advertiserScope.launch {
+                            autoStopHandler.removeCallbacksAndMessages(null)
+                            stopActiveSetAsync()
+                            workerHandler.post {
+                                isAdvertising  = false
+                                currentJob     = null
+                                currentTier    = null
+                                isTdmGapActive = false
+                                drainQueue()   // start URGENT job immediately, no TDM gap
+                            }
+                        }
+                    } else {
+                        drainQueue()
+                    }
                 }
 
                 QueueTier.NORMAL -> {
                     normalQueue.addLast(job)
                     Log.i("BLE", "Advertiser.enqueue(): NORMAL(${packet.type}) msgId=$msgIdPreview")
+                    drainQueue()
                 }
 
                 QueueTier.BACKGROUND -> {
@@ -431,9 +455,9 @@ private class BleAdvertiserApi26(bluetoothAdapter: BluetoothAdapter?) {
                     }
                     backgroundQueue.addLast(job)
                     Log.d("BLE", "Advertiser.enqueue(): BACKGROUND msgId=$msgIdPreview type=${packet.type} relay=$isRelay queueSize=${backgroundQueue.size}")
+                    drainQueue()
                 }
             }
-            drainQueue()
         }
     }
 
@@ -556,7 +580,10 @@ private class BleAdvertiserApi26(bluetoothAdapter: BluetoothAdapter?) {
 
         val serviceParcelUuid = android.os.ParcelUuid(SERVICE_UUID)
         val data = android.bluetooth.le.AdvertiseData.Builder()
-            .addServiceUuid(serviceParcelUuid)
+            // addServiceUuid() omitted intentionally: adding both a Service UUID list
+            // AD structure (18 bytes) and a Service Data AD structure (18+N bytes) wastes
+            // 18 bytes per packet. The scanner identifies our packets via the UUID in the
+            // Service Data field alone, giving 18 more bytes for payload.
             .addServiceData(serviceParcelUuid, job.packetBytes)
             .setIncludeTxPowerLevel(false)
             .setIncludeDeviceName(false)

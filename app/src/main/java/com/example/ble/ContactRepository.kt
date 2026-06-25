@@ -39,6 +39,9 @@ interface ContactDao {
 
     @Query("DELETE FROM contacts WHERE senderId = :senderId")
     suspend fun delete(senderId: String): Int
+
+    @Query("DELETE FROM contacts")
+    suspend fun deleteAll(): Int
 }
 
 @Database(
@@ -134,6 +137,14 @@ class ContactRepository private constructor(private val db: AppDatabase) {
         db.withTransaction {
             reactionDao.deleteForContact(senderId)
             messageDao.deleteForContact(senderId)
+        }
+    }
+
+    suspend fun deleteAllContactsAndChats() {
+        db.withTransaction {
+            reactionDao.deleteAll()
+            messageDao.deleteAll()
+            contactDao.deleteAll()
         }
     }
 }

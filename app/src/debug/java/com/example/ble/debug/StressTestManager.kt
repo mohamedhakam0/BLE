@@ -147,7 +147,13 @@ object StressTestManager {
                 if (contact != null) {
                     val peerPubKey = Base64.decode(contact.publicKey, Base64.NO_WRAP)
                     val sharedSecret = CryptoManager.computeSharedSecret(identity.privateKey, peerPubKey)
-                    val keyMaterial = CryptoManager.deriveSessionKey(sharedSecret, me, receiverId)
+                    // Must match ChatViewModel.sessionCrypto: use the first 4 bytes of each
+                    // *public key* (not senderId) sorted by unsigned lex order for symmetry.
+                    val myKey4   = identity.publicKey.copyOfRange(0, 4)
+                    val peerKey4 = peerPubKey.copyOfRange(0, 4)
+                    val (lo, hi) = if (myKey4.unsignedLexCompare4(peerKey4) <= 0)
+                        Pair(myKey4, peerKey4) else Pair(peerKey4, myKey4)
+                    val keyMaterial = CryptoManager.deriveSessionKey(sharedSecret, lo, hi)
                     aesKey = keyMaterial.copyOfRange(0, 16)
                     nonceBase = keyMaterial.copyOfRange(16, 28)
                     AppLogger.d(TAG, "Encryption keys derived for contact=$contactSenderIdHex")
@@ -160,7 +166,7 @@ object StressTestManager {
 
                     val text = "[$testLabel] #$i"
                     val payloadBytes = text.encodeToByteArray()
-                    if (payloadBytes.size > 209) continue
+                    if (payloadBytes.size > 208) continue
 
                     val msgIdBytes = Random.nextBytes(8)
                     val msgIdHex = msgIdBytes.toHex()
@@ -392,6 +398,14 @@ private fun String.hexToByteArray4(): ByteArray {
         val index = i * 2
         clean.substring(index, index + 2).toInt(16).toByte()
     }
+}
+
+private fun ByteArray.unsignedLexCompare4(other: ByteArray): Int {
+    for (i in 0 until 4) {
+        val diff = (this[i].toInt() and 0xFF) - (other[i].toInt() and 0xFF)
+        if (diff != 0) return diff
+    }
+    return 0
 }
 
 

@@ -108,7 +108,7 @@ class BleScanner(
 
         private const val WATCHDOG_PERIOD_MS = 25 * 60 * 1000L   // 25 minutes
 
-        private const val MIN_PACKET_BYTES = 41
+        private const val MIN_PACKET_BYTES = 42
         private const val MAX_PACKET_BYTES = 250
 
         /** Must match the UUID used by BleAdvertiser. */
@@ -200,10 +200,13 @@ class BleScanner(
     // ── Private helpers ────────────────────────────────────────────────────────
 
     private fun buildFilters(): List<ScanFilter> {
-        val meshFilter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid.fromString("12E61727-B41A-45D9-A60F-7C3B4E1D9F2A"))
-            .build()
-        return listOf(meshFilter)
+        // Empty filter: receive all BLE advertisements and identify ours via the
+        // Service Data UUID check in process(). A UUID-list filter won't match
+        // our packets because we no longer include addServiceUuid() in the
+        // advertising data — only addServiceData() with the same UUID. Hardware
+        // UUID filters on Samsung devices also have known issues with extended
+        // advertising PDUs on Coded PHY.
+        return emptyList()
     }
 
     private fun buildScanSettings(): ScanSettings {
@@ -277,6 +280,7 @@ class BleScanner(
                 return
             }
 
+            TestScanObserver.onPacketScanned(packet, ScanMeta(result.rssi, result.device?.address ?: ""))
             onPacketReceived(packet, result.rssi)
         }
     }

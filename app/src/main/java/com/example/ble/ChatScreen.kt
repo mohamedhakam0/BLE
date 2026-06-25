@@ -1,9 +1,12 @@
 package com.example.ble
 
+import android.bluetooth.BluetoothManager
 import android.content.ClipData
+import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -66,6 +69,7 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -129,6 +133,20 @@ fun ChatScreen(
     val starredMessages by viewModel.starredMessages.collectAsState(initial = emptyList())
 
     var input by remember { mutableStateOf("") }
+    // 250-byte BLE Extended Advertising cap minus the 41-byte fixed header (which includes the 16-byte GCM auth tag)
+    val maxPayloadBytes = 250 - PacketSerializer.FIXED_HEADER_SIZE
+    val inputBytes = input.toByteArray(Charsets.UTF_8).size
+    val shakeOffset = remember { Animatable(0f) }
+    var shakeGuard by remember { mutableStateOf(false) }
+    val counterColor by animateColorAsState(
+        targetValue = when {
+            inputBytes.toFloat() / maxPayloadBytes > 0.9f -> MaterialTheme.colorScheme.error
+            inputBytes.toFloat() / maxPayloadBytes > 0.75f -> Color(0xFFFF9800)
+            else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+        },
+        label = "counterColor"
+    )
+    val canSend = input.trim().isNotEmpty() && inputBytes <= maxPayloadBytes
     val listState = rememberLazyListState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -153,6 +171,14 @@ fun ChatScreen(
     var showDeleteChatDialog by remember { mutableStateOf(false) }
     var menuExpanded by remember { mutableStateOf(false) }
     var showInfoSheet by remember { mutableStateOf(false) }
+    var showBtOffDialog by remember { mutableStateOf(false) }
+    var forceLoraEligible by remember { mutableStateOf(false) }
+    var loraOnlyRx by remember { mutableStateOf(false) }
+
+    // Auto-clear LoRa-only mode when leaving the screen
+    DisposableEffect(Unit) {
+        onDispose { ForegroundMeshService.loraOnlyRxMode = false }
+    }
 
     // Tracks the input bar's laid-out height in px. Used to add bottom content padding to the
     // message list so the last message is never hidden behind the floating input bar.
@@ -197,7 +223,34 @@ fun ChatScreen(
         }
     }
 
+    // Show a persistent notification when a message cannot be delivered via BLE and would
+    // require LoRa forwarding. The message has already been saved to the DB; it will appear
+    // in the chat list with a "sent" status until a LoRa path is available.
+    LaunchedEffect(viewModel) {
+        viewModel.routeEvents.collect { event ->
+            when (event) {
+                is RouteEvent.LoraRequired ->
+                    Toast.makeText(
+                        context,
+                        "Contact not in BLE range — message queued for LoRa forwarding",
+                        Toast.LENGTH_LONG
+                    ).show()
+            }
+        }
+    }
+
     // Clear chat dialog
+    if (showBtOffDialog) {
+        AlertDialog(
+            onDismissRequest = { showBtOffDialog = false },
+            title = { Text("Bluetooth is off") },
+            text = { Text("Please enable Bluetooth to send messages over the mesh.") },
+            confirmButton = {
+                TextButton(onClick = { showBtOffDialog = false }) { Text("OK") }
+            }
+        )
+    }
+
     if (showDeleteChatDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteChatDialog = false },
@@ -520,10 +573,85 @@ fun ChatScreen(
                                 text = { Text("Contact info") },
                                 onClick = { menuExpanded = false; showInfoSheet = true }
                             )
+                            HorizontalDivider(
+                                modifier = Modifier.padding(vertical = 2.dp),
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "Force LoRa TX",
+                                        color = if (forceLoraEligible) MaterialTheme.colorScheme.primary
+                                                else MaterialTheme.colorScheme.onSurface
+                                    )
+                                },
+                                trailingIcon = if (forceLoraEligible) {{
+                                    Icon(
+                                        Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }} else null,
+                                onClick = { forceLoraEligible = !forceLoraEligible }
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "LoRa-only RX",
+                                        color = if (loraOnlyRx) MaterialTheme.colorScheme.error
+                                                else MaterialTheme.colorScheme.onSurface
+                                    )
+                                },
+                                trailingIcon = if (loraOnlyRx) {{
+                                    Icon(
+                                        Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }} else null,
+                                onClick = {
+                                    loraOnlyRx = !loraOnlyRx
+                                    ForegroundMeshService.loraOnlyRxMode = loraOnlyRx
+                                }
+                            )
                         }
                     }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline, thickness = 1.dp)
+                if (forceLoraEligible) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.85f))
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "LoRa eligible ON — packets marked for LoRa routing",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
+                }
+                if (loraOnlyRx) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f))
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "LoRa-only RX — direct BLE from phone is ignored",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
             }
 
             // Messages — weight(1f) here is NOT reduced by the keyboard because the
@@ -587,47 +715,102 @@ fun ChatScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.Bottom
             ) {
-                TextField(
-                    value = input,
-                    onValueChange = { input = it },
-                    modifier = Modifier
-                        .weight(1f)
-                        .onFocusChanged { inputFocused = it.isFocused },
-                    placeholder = {
-                        Text(
-                            "Message",
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                        )
-                    },
-                    singleLine = false,
-                    maxLines = 6,
-                    keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.None),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.surface,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                        focusedIndicatorColor = MaterialTheme.colorScheme.primary,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        cursorColor = MaterialTheme.colorScheme.primary,
-                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
-                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
-                    ),
-                    shape = RoundedCornerShape(20.dp)
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    TextField(
+                        value = input,
+                        onValueChange = { new ->
+                            val bytes = new.toByteArray(Charsets.UTF_8).size
+                            if (bytes <= maxPayloadBytes) {
+                                input = new
+                            } else if (!shakeGuard) {
+                                shakeGuard = true
+                                scope.launch {
+                                    shakeOffset.animateTo(-8f, tween(50))
+                                    shakeOffset.animateTo(8f, tween(50))
+                                    shakeOffset.animateTo(-6f, tween(50))
+                                    shakeOffset.animateTo(6f, tween(50))
+                                    shakeOffset.animateTo(0f, tween(50))
+                                    shakeGuard = false
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .offset(x = shakeOffset.value.dp)
+                            .onFocusChanged { inputFocused = it.isFocused },
+                        placeholder = {
+                            Text(
+                                "Message",
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                            )
+                        },
+                        singleLine = false,
+                        maxLines = 6,
+                        keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.None),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surface,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                            focusedIndicatorColor = MaterialTheme.colorScheme.primary,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            cursorColor = MaterialTheme.colorScheme.primary,
+                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                        ),
+                        shape = RoundedCornerShape(20.dp)
+                    )
+                    if (inputBytes > 0) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (inputBytes.toFloat() / maxPayloadBytes >= 0.9f) {
+                                Text(
+                                    "Max $maxPayloadBytes bytes (LoRa packet limit)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = counterColor,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            } else {
+                                Spacer(Modifier.weight(1f))
+                            }
+                            Text(
+                                "$inputBytes / $maxPayloadBytes",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = counterColor
+                            )
+                        }
+                    }
+                }
                 Spacer(Modifier.width(8.dp))
                 FloatingActionButton(
                     onClick = {
+                        if (!canSend) return@FloatingActionButton
+                        val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+                        if (btManager?.adapter?.isEnabled == false) {
+                            showBtOffDialog = true
+                            return@FloatingActionButton
+                        }
                         val text = input.trim()
-                        if (text.isEmpty()) return@FloatingActionButton
                         input = ""
-                        viewModel.sendMessage(text)
+                        viewModel.sendMessage(text, forceLoraEligible)
                     },
-                    containerColor = MaterialTheme.colorScheme.primary,
+                    containerColor = if (canSend) MaterialTheme.colorScheme.primary
+                                     else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
                     shape = CircleShape,
                     modifier = Modifier.size(36.dp)
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = MaterialTheme.colorScheme.onPrimary)
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send",
+                        tint = if (canSend) MaterialTheme.colorScheme.onPrimary
+                               else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                    )
                 }
             }
         }
@@ -1122,6 +1305,38 @@ private fun BubbleContent(message: ChatUiMessage, hasReactions: Boolean = false)
                             )
                         }
                     }
+                }
+            }
+            if (isMine && message.status == DeliveryStatus.DELIVERED && message.ackRttMs >= 0) {
+                val hopLabel = if (message.hopCount == 0) "direct" else "${message.hopCount} hops"
+                val rttLabel = if (message.ackRttMs < 1000) "${message.ackRttMs}ms"
+                              else "${"%.1f".format(message.ackRttMs / 1000.0)}s"
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    Text(
+                        "$hopLabel · $rttLabel",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 9.sp,
+                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.5f)
+                    )
+                }
+            }
+            if (!isMine && message.hopCount >= 0) {
+                val hopLabel = if (message.hopCount == 0) "direct" else "${message.hopCount} hops"
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Start
+                ) {
+                    Text(
+                        hopLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 9.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                    )
                 }
             }
         }

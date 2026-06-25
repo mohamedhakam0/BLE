@@ -24,7 +24,7 @@ object CryptoManager {
     private const val NONCE_LEN = 12
     private const val TAG_LEN_BITS = 128
     private const val TAG_LEN_BYTES = 16
-    private const val SESSION_KEY_LEN = 32
+    private const val SESSION_KEY_LEN = 28  // 16 AES key + 12 nonce base, no discarded bytes
     private const val X25519_KEY_LEN = 32
     private const val AAD_LEN = 22
 
@@ -133,6 +133,8 @@ object CryptoManager {
     }
 
     fun buildAad(packet: MeshPacket): ByteArray {
+        // flags is intentionally excluded: FLAG_IS_GATEWAY is set by LoRa relays on every
+        // packet they re-broadcast, which would change the AAD and break decryption.
         val buf = ByteBuffer.allocate(AAD_LEN)
         buf.put(packet.version)
         buf.put(packet.type.value)
