@@ -227,12 +227,16 @@ private fun ConfigScreen(
     var targetPeer by remember { mutableStateOf("") }
     var loraEligible by remember { mutableStateOf(false) }
     var notes by remember { mutableStateOf("") }
+    var isCustomRate by remember { mutableStateOf(false) }
+    var customRateText by remember { mutableStateOf("") }
+    var isCustomCount by remember { mutableStateOf(false) }
+    var customCountText by remember { mutableStateOf("") }
 
     var envExpanded by remember { mutableStateOf(false) }
     var peerExpanded by remember { mutableStateOf(false) }
     val environments = listOf("indoor-quiet", "indoor-busy", "outdoor")
     val msgCounts = listOf(20, 30, 50, 100)
-    val rates = listOf(5000L to "5s", 2000L to "2s", 1000L to "1s", 0L to "Burst")
+    val rates = listOf(10000L to "10s", 5000L to "5s", 2000L to "2s", 1000L to "1s", 0L to "Burst")
 
     val trialNumInt = trialNum.toIntOrNull()?.coerceAtLeast(1) ?: 1
 
@@ -312,13 +316,33 @@ private fun ConfigScreen(
             ConfigSection("Message count") {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     msgCounts.forEach { count ->
-                        val selected = msgCount == count
+                        val selected = !isCustomCount && msgCount == count
                         FilterChip(
                             selected = selected,
-                            onClick = { msgCount = count },
+                            onClick = { msgCount = count; isCustomCount = false },
                             label = { Text("$count") }
                         )
                     }
+                    FilterChip(
+                        selected = isCustomCount,
+                        onClick = { isCustomCount = true },
+                        label = { Text("Custom") }
+                    )
+                }
+                if (isCustomCount) {
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = customCountText,
+                        onValueChange = { v ->
+                            val digits = v.filter { it.isDigit() }
+                            if ((digits.toIntOrNull() ?: 0) <= 999) customCountText = digits
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("Number of messages", color = MaterialTheme.colorScheme.onSurface.copy(0.35f)) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = RoundedCornerShape(10.dp)
+                    )
                 }
             }
 
@@ -326,13 +350,34 @@ private fun ConfigScreen(
             ConfigSection("Rate") {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     rates.forEach { (ms, label) ->
-                        val selected = intervalMs == ms
+                        val selected = !isCustomRate && intervalMs == ms
                         FilterChip(
                             selected = selected,
-                            onClick = { intervalMs = ms },
+                            onClick = { intervalMs = ms; isCustomRate = false },
                             label = { Text(label) }
                         )
                     }
+                    FilterChip(
+                        selected = isCustomRate,
+                        onClick = { isCustomRate = true },
+                        label = { Text("Custom") }
+                    )
+                }
+                if (isCustomRate) {
+                    Spacer(Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = customRateText,
+                        onValueChange = { v ->
+                            val digits = v.filter { it.isDigit() }
+                            if ((digits.toIntOrNull() ?: 0) <= 60) customRateText = digits
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("Interval in seconds", color = MaterialTheme.colorScheme.onSurface.copy(0.35f)) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = RoundedCornerShape(10.dp),
+                        suffix = { Text("s") }
+                    )
                 }
             }
 
@@ -475,13 +520,19 @@ private fun ConfigScreen(
         ) {
             Button(
                 onClick = {
+                    val finalIntervalMs = if (isCustomRate)
+                        (customRateText.toLongOrNull() ?: 5L) * 1000L
+                    else intervalMs
+                    val finalMsgCount = if (isCustomCount)
+                        customCountText.toIntOrNull()?.coerceAtLeast(1) ?: msgCount
+                    else msgCount
                     onStart(
                         TestConfig(
                             experimentId  = preset.experimentId,
                             trialNum      = trialNumInt,
                             role          = role,
-                            messageCount  = msgCount,
-                            intervalMs    = intervalMs,
+                            messageCount  = finalMsgCount,
+                            intervalMs    = finalIntervalMs,
                             environment   = environment,
                             distanceLabel = distanceLabel,
                             targetPeerId  = targetPeer.ifBlank { null },
