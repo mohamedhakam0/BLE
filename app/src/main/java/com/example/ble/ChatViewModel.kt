@@ -399,15 +399,26 @@ class ChatViewModel(
         // Routing decision: consult the neighbor table to determine whether the recipient
         // is reachable within the local BLE cluster.
         //
-        // • hopCount == 0  →  direct neighbor seen over BLE
-        // • hopCount == 1  →  extended neighbor discovered via a piggybacked HELLO
-        // Both cases are treated as BLE-local; LoRa bridges remote clusters.
+        // Priority order:
+        //  1. Active neighbor (hop-0 or hop-1 in table)  → plain BLE send
+        //  2. Recently seen within RECENTLY_SEEN_TTL_MS  → optimistic BLE send
+        //     A missed HELLO cycle (BLE collision, scan gap) must not silently divert
+        //     a message to LoRa when the peer is sitting 10 m away.
+        //  3. Not recently seen but a LoRa gateway is visible → set FLAG_LORA_ELIGIBLE
+        //  4. No path at all → toast and do not send
         val recipientHex = contactSenderIdHex.trim().lowercase()
-        val neighbor = NeighborTable.lookup(recipientHex)
-        val hasGateway = NeighborTable.hasGatewayNeighbor()
+        val neighbor     = NeighborTable.lookup(recipientHex)
+        val recentlySeen = NeighborTable.wasRecentlySeen(recipientHex)
+        val hasGateway   = NeighborTable.hasGatewayNeighbor()
         when {
             neighbor != null -> {
-                AppLogger.d("Route", "CHAT → BLE dst=$recipientHex hopCount=${neighbor.hopCount}")
+                AppLogger.d("Route", "CHAT → BLE (active) dst=$recipientHex hopCount=${neighbor.hopCount}")
+                advertiser.enqueue(packet)
+            }
+            recentlySeen -> {
+                // Peer dropped out of the active table (HELLO missed) but was heard
+                // recently — BLE will very likely still reach them.
+                AppLogger.i("Route", "CHAT → BLE (recently seen, optimistic) dst=$recipientHex")
                 advertiser.enqueue(packet)
             }
             hasGateway -> {

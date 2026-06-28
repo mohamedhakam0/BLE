@@ -23,6 +23,17 @@ object NeighborTable {
     @Volatile
     private var selfNodeId: String? = null
 
+    /**
+     * Ghost cache: records the last time we received a direct (hop-0) HELLO from each node.
+     * Entries here outlive the active [table] so the router can make an optimistic BLE
+     * attempt for peers whose HELLO recently expired rather than immediately diverting to LoRa.
+     * TTL is checked lazily on [wasRecentlySeen]; no background eviction needed.
+     */
+    private val recentlySeen = ConcurrentHashMap<String, Long>()   // nodeId → lastSeenMs
+
+    /** How long a direct sighting is considered "recent" for optimistic BLE routing. */
+    const val RECENTLY_SEEN_TTL_MS = 90_000L  // 1 min 30 s
+
     val directCount: Int
         get() = table.values.count { it.hopCount == 0 }
 
@@ -32,6 +43,7 @@ object NeighborTable {
 
     fun clear() {
         table.clear()
+        recentlySeen.clear()
         emitSnapshot()
     }
 
@@ -48,6 +60,12 @@ object NeighborTable {
         if (selfNodeId != null && key == selfNodeId) return
         val normalized = entry.copy(nodeId = key)
         val existing = table[key]
+
+        // Every direct (hop-0) sighting refreshes the ghost cache regardless of
+        // whether the active-table entry actually changes.
+        if (normalized.hopCount == 0) {
+            recentlySeen[key] = entry.lastSeen
+        }
 
         if (existing != null) {
             if (existing.hopCount == 0 && normalized.hopCount == 1) {
@@ -81,6 +99,19 @@ object NeighborTable {
             }
         }
         if (changed) emitSnapshot()
+    }
+
+    /**
+     * Returns true if a direct HELLO from [nodeId] was received within the last
+     * [RECENTLY_SEEN_TTL_MS] milliseconds, even if the entry has since been evicted
+     * from the active neighbor table.
+     *
+     * Used by the router to make an optimistic BLE send attempt instead of immediately
+     * diverting to LoRa when a HELLO cycle was missed (e.g. BLE collision at 10 m).
+     */
+    fun wasRecentlySeen(nodeId: String): Boolean {
+        val ts = recentlySeen[nodeId.trim().lowercase()] ?: return false
+        return System.currentTimeMillis() - ts <= RECENTLY_SEEN_TTL_MS
     }
 
     fun evictStale() {
